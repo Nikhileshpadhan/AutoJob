@@ -3,19 +3,19 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const badgeVariants = cva(
-  "inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  "inline-flex items-center rounded px-2 py-0.5 text-[11px] font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-ring",
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80",
-        secondary: "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        destructive: "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
-        outline: "text-foreground",
-        linkedin: "border-transparent bg-sky-600 text-white font-medium",
-        internshala: "border-transparent bg-emerald-600 text-white font-medium",
-        applied: "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold border-emerald-500/20",
-        pending: "border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold border-amber-500/20",
-        blocked: "border-transparent bg-rose-500/15 text-rose-600 dark:text-rose-400 font-semibold border-rose-500/20",
+        default: "border border-primary/20 bg-primary/10 text-primary",
+        secondary: "border border-border bg-secondary text-muted-foreground",
+        destructive: "border border-destructive/20 bg-destructive/10 text-destructive",
+        outline: "border border-border text-foreground",
+        linkedin: "border border-sky-500/20 bg-sky-500/10 text-sky-400",
+        internshala: "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
+        applied: "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
+        pending: "border border-amber-500/20 bg-amber-500/10 text-amber-400",
+        blocked: "border border-rose-500/20 bg-rose-500/10 text-rose-400",
       },
     },
     defaultVariants: {

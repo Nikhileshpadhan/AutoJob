@@ -4,6 +4,7 @@ import fs from "node:fs";
 interface TelegramConfig {
   botToken?: string;
   chatId?: string;
+  apiBaseUrl?: string;
 }
 
 export async function getTelegramConfig(): Promise<TelegramConfig> {
@@ -16,21 +17,31 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
     }
   }
 
+  const rawBaseUrl = process.env.TELEGRAM_API_BASE_URL || settings.telegram_api_base_url || "https://api.telegram.org";
+  const apiBaseUrl = rawBaseUrl.replace(/\/+$/, "");
+
   return {
     botToken: process.env.TELEGRAM_BOT_TOKEN || settings.telegram_bot_token || "",
     chatId: process.env.TELEGRAM_CHAT_ID || settings.telegram_chat_id || "",
+    apiBaseUrl,
   };
 }
 
-export async function sendTelegramMessage(text: string): Promise<boolean> {
-  const { botToken, chatId } = await getTelegramConfig();
+export interface TelegramResult {
+  success: boolean;
+  error?: string;
+}
+
+export async function sendTelegramMessageDetails(text: string): Promise<TelegramResult> {
+  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org" } = await getTelegramConfig();
   if (!botToken || !chatId) {
-    console.warn("Telegram bot token or chat ID is not configured.");
-    return false;
+    const errorMsg = "Telegram bot token or chat ID is not configured.";
+    console.warn(errorMsg);
+    return { success: false, error: errorMsg };
   }
 
   try {
-    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const url = `${apiBaseUrl}/bot${botToken}/sendMessage`;
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -44,27 +55,36 @@ export async function sendTelegramMessage(text: string): Promise<boolean> {
     const data = await response.json();
     if (!data.ok) {
       console.error("Telegram API error:", data);
-      return false;
+      return { success: false, error: data.description || "Telegram API rejected the request." };
     }
-    return true;
-  } catch (err) {
+    return { success: true };
+  } catch (err: unknown) {
     console.error("Failed to send Telegram message:", err);
-    return false;
+    let errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes("ECONNRESET") || errMsg.includes("fetch failed")) {
+      errMsg = `Network connection reset (${errMsg}). Your local ISP/network is resetting connections to ${apiBaseUrl}. Use a VPN / Cloudflare WARP or set TELEGRAM_API_BASE_URL to a working reverse proxy in .env.`;
+    }
+    return { success: false, error: errMsg };
   }
+}
+
+export async function sendTelegramMessage(text: string): Promise<boolean> {
+  const result = await sendTelegramMessageDetails(text);
+  return result.success;
 }
 
 export async function sendTelegramPhoto(params: {
   caption: string;
   photoPathOrBuffer: string | Buffer;
 }): Promise<boolean> {
-  const { botToken, chatId } = await getTelegramConfig();
+  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org" } = await getTelegramConfig();
   if (!botToken || !chatId) {
     console.warn("Telegram bot token or chat ID is not configured.");
     return false;
   }
 
   try {
-    const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+    const url = `${apiBaseUrl}/bot${botToken}/sendPhoto`;
     const formData = new FormData();
     formData.append("chat_id", chatId);
     formData.append("caption", params.caption);

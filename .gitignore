@@ -31,3 +31,11 @@ data/screenshots/
 # Operating system files
 .DS_Store
 Thumbs.db
+.originkit/
+.hallmark/
+tsconfig.tsbuildinfo
+
+# AI Agent Skills & Skill locks (Excluded as requested)
+.agents/
+skills/
+skills-lock.json

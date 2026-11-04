@@ -56,8 +56,19 @@ async function main() {
     CREATE TABLE IF NOT EXISTS daily_quota (
       date TEXT PRIMARY KEY,
       applied_count INTEGER DEFAULT 0,
-      max_cap INTEGER DEFAULT 5,
+      max_cap INTEGER DEFAULT 10,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS platform_daily_quota (
+      date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      applied_count INTEGER DEFAULT 0,
+      max_cap INTEGER DEFAULT 5,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (date, platform)
     );
   `);
 
@@ -82,12 +93,29 @@ async function main() {
     );
   `);
 
-  await db.execute(`
-    INSERT OR IGNORE INTO profile (id, full_name, email, skills_json, target_roles_json)
-    VALUES (1, 'Applicant Name', 'applicant@example.com', '["TypeScript", "React", "Next.js", "Node.js", "Python"]', '["Full Stack Developer", "Software Engineer", "Frontend Developer"]')
-  `);
+  // Default settings
+  const defaultSettings = {
+    daily_cap: "10",
+    linkedin_daily_cap: "5",
+    internshala_daily_cap: "5",
+    opportunity_type: "internship", // 'internship' | 'job'
+    workplace_type: "remote", // 'any' | 'remote' | 'hybrid' | 'on_site'
+    target_location: "Remote",
+    apply_type: "all", // 'all' (Easy Apply + Direct Links) | 'easy_apply_only'
+    min_match_score: "65",
+    active_llm: "gemini",
+    telegram_enabled: "true",
+    auto_apply_enabled: "true",
+  };
 
-  console.log("Database initialized successfully!");
+  for (const [k, v] of Object.entries(defaultSettings)) {
+    await db.execute({
+      sql: "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)",
+      args: [k, v],
+    });
+  }
+
+  console.log("Database schema initialized and updated successfully!");
 }
 
 main().catch((err) => {

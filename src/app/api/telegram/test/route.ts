@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { sendTelegramMessage } from "@/lib/telegram";
+import { sendTelegramMessageDetails } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
@@ -10,15 +10,15 @@ Timestamp: ${new Date().toLocaleString()}
 
 Your Telegram human-in-the-loop notification bridge is online and connected! If a CAPTCHA or security checkpoint is encountered by Playwright, an instant snapshot and pause alert will be delivered here.`;
 
-    const success = await sendTelegramMessage(text);
-    if (!success) {
+    const result = await sendTelegramMessageDetails(text);
+    if (!result.success) {
       return NextResponse.json(
-        { error: "Failed to send message. Please verify your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in settings." },
+        { error: result.error || "Failed to send message. Please verify your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in settings." },
         { status: 400 }
       );
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, message: "Telegram test message sent successfully!" });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });

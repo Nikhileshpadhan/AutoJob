@@ -7,6 +7,7 @@ interface LLMConfig {
   geminiApiKey?: string;
   groqApiKey?: string;
   preferredProvider?: "gemini" | "groq";
+  geminiModel?: string;
 }
 
 async function getLLMConfig(): Promise<LLMConfig> {
@@ -23,6 +24,7 @@ async function getLLMConfig(): Promise<LLMConfig> {
     geminiApiKey: process.env.GEMINI_API_KEY || settings.gemini_api_key || "",
     groqApiKey: process.env.GROQ_API_KEY || settings.groq_api_key || "",
     preferredProvider: (process.env.ACTIVE_LLM_PROVIDER || settings.active_llm || "gemini") as "gemini" | "groq",
+    geminiModel: process.env.GEMINI_MODEL || settings.gemini_model || "gemini-3.5-flash",
   };
 }
 
@@ -37,7 +39,7 @@ export async function callLLM(prompt: string, systemInstruction?: string): Promi
     } catch (err) {
       console.warn("Groq failed, attempting Gemini fallback:", err);
       if (config.geminiApiKey) {
-        return await callGemini(prompt, config.geminiApiKey, systemInstruction);
+        return await callGemini(prompt, config.geminiApiKey, systemInstruction, config.geminiModel);
       }
       throw err;
     }
@@ -46,7 +48,7 @@ export async function callLLM(prompt: string, systemInstruction?: string): Promi
   // Default to Gemini
   if (config.geminiApiKey) {
     try {
-      return await callGemini(prompt, config.geminiApiKey, systemInstruction);
+      return await callGemini(prompt, config.geminiApiKey, systemInstruction, config.geminiModel);
     } catch (err) {
       console.warn("Gemini failed, attempting Groq fallback:", err);
       if (config.groqApiKey) {
@@ -63,15 +65,53 @@ export async function callLLM(prompt: string, systemInstruction?: string): Promi
   throw new Error("No API key configured for Gemini or Groq. Please configure an API key in Settings or .env.");
 }
 
-async function callGemini(prompt: string, apiKey: string, systemInstruction?: string): Promise<string> {
+async function callGemini(
+  prompt: string,
+  apiKey: string,
+  systemInstruction?: string,
+  preferredModel: string = "gemini-3.5-flash"
+): Promise<string> {
   const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: systemInstruction ? { systemInstruction } : undefined,
-  });
 
-  return response.text || "";
+  // Priority candidate models: preferred first, with auto-fallback to 3.5-flash, 3.8-flash, and 3.1-flash-lite
+  const candidateModels = [
+    preferredModel,
+    process.env.GEMINI_MODEL,
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
+  ].filter(Boolean) as string[];
+
+  const models = Array.from(new Set(candidateModels));
+  let lastError: unknown;
+
+  for (const model of models) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            abortSignal: controller.signal,
+            ...(systemInstruction ? { systemInstruction } : {}),
+          },
+        });
+        if (response.text) {
+          return response.text;
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err: unknown) {
+      console.warn(`Gemini model ${model} failed, attempting fallback:`, err);
+      lastError = err;
+    }
+  }
+
+  throw lastError;
 }
 
 async function callGroq(prompt: string, apiKey: string, systemInstruction?: string): Promise<string> {
@@ -128,21 +168,22 @@ Output ONLY the raw JSON object, without backticks, markdown fences, or extra co
   );
 
   try {
-    const cleaned = output.replace(/```json/g, "").replace(/```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
+    let jsonString = output.trim();
+    const firstBrace = jsonString.indexOf("{");
+    const lastBrace = jsonString.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      jsonString = jsonString.slice(firstBrace, lastBrace + 1);
+    } else {
+      jsonString = jsonString.replace(/```json/gi, "").replace(/```/g, "").trim();
+    }
+    const parsed = JSON.parse(jsonString);
     return {
       ...parsed,
       rawText: rawResumeText,
     };
   } catch (err) {
     console.error("Failed to parse LLM resume response as JSON:", output, err);
-    return {
-      fullName: "",
-      skills: [],
-      experience: [],
-      education: [],
-      rawText: rawResumeText,
-    };
+    throw new Error(`Failed to parse structured JSON from LLM: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -206,4 +247,148 @@ Generate answers JSON:`;
     console.error("Failed to parse answers as JSON:", response, err);
     return {};
   }
+}
+
+export interface MatchEvaluationResult {
+  isRelevant: boolean;
+  score: number; // 0 to 100
+  isHighChance: boolean;
+  reasoning: string;
+  matchedSkills: string[];
+}
+
+/**
+ * Evaluates whether a candidate has a high probability of selection for a given position
+ * based on resume skills, student/internship status, and job requirements.
+ */
+export async function evaluateSelectionProbability(params: {
+  candidateProfile: Record<string, unknown>;
+  candidateSkills: string[];
+  jobTitle: string;
+  companyName: string;
+  jobDescription: string;
+  opportunityType: "internship" | "job";
+  minScoreThreshold?: number;
+}): Promise<MatchEvaluationResult> {
+  const titleLower = params.jobTitle.toLowerCase();
+  const jdLower = (params.jobDescription || "").toLowerCase();
+  const combined = `${titleLower} ${jdLower}`;
+  const threshold = params.minScoreThreshold ?? 65;
+
+  // 1. Strict negative filter: if student/internship mode, disqualify senior/lead roles
+  if (params.opportunityType === "internship") {
+    const seniorKeywords = [
+      "senior",
+      "sr.",
+      "lead",
+      "principal",
+      "staff",
+      "director",
+      "vp",
+      "manager",
+      "architect",
+      "5+ years",
+      "6+ years",
+      "7+ years",
+      "8+ years",
+      "10+ years",
+    ];
+
+    for (const kw of seniorKeywords) {
+      if (titleLower.includes(kw)) {
+        return {
+          isRelevant: false,
+          score: 15,
+          isHighChance: false,
+          reasoning: `Disqualified senior title "${kw}" - not suited for student internship.`,
+          matchedSkills: [],
+        };
+      }
+    }
+  }
+
+  // 2. Disqualify completely unrelated domains
+  const unrelatedDomains = [
+    "nurse",
+    "physician",
+    "medical",
+    "accountant",
+    "accounting",
+    "audit executive",
+    "sales executive",
+    "b2b sales",
+    "telecaller",
+    "customer support",
+    "graphic designer",
+    "legal counsel",
+    "lawyer",
+    "driver",
+    "chef",
+  ];
+
+  for (const neg of unrelatedDomains) {
+    if (
+      titleLower.includes(neg) &&
+      !titleLower.includes("engineer") &&
+      !titleLower.includes("developer") &&
+      !titleLower.includes("ai") &&
+      !titleLower.includes("software")
+    ) {
+      return {
+        isRelevant: false,
+        score: 0,
+        isHighChance: false,
+        reasoning: `Disqualified unrelated domain (${neg}).`,
+        matchedSkills: [],
+      };
+    }
+  }
+
+  // 3. Match resume skills against description
+  const matched: string[] = [];
+  for (const skill of params.candidateSkills) {
+    const clean = skill.trim().toLowerCase();
+    if (!clean || clean.length < 2) continue;
+    if (clean.length <= 4) {
+      const reg = new RegExp(`\\b${clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      if (reg.test(combined)) matched.push(skill);
+    } else {
+      if (combined.includes(clean)) matched.push(skill);
+    }
+  }
+
+  // Calculate baseline match score (0 - 100)
+  let score = 0;
+  if (params.candidateSkills.length > 0) {
+    const ratio = matched.length / Math.min(params.candidateSkills.length, 6);
+    score = Math.min(100, Math.round(ratio * 70));
+  } else {
+    score = 40;
+  }
+
+  // Bonus for internship keyword alignment in internship mode
+  if (params.opportunityType === "internship") {
+    const internTerms = ["intern", "internship", "trainee", "fresher", "junior", "apprentice", "graduate"];
+    if (internTerms.some((t) => titleLower.includes(t))) {
+      score += 25;
+    }
+  } else {
+    const jobTerms = ["developer", "engineer", "software", "programmer", "analyst"];
+    if (jobTerms.some((t) => titleLower.includes(t))) {
+      score += 15;
+    }
+  }
+
+  score = Math.min(100, score);
+  const isHighChance = score >= threshold;
+
+  return {
+    isRelevant: score >= 40,
+    score,
+    isHighChance,
+    reasoning: isHighChance
+      ? `High selection match (${score}% >= ${threshold}%): matches ${matched.length} key skills [${matched.slice(0, 4).join(", ")}]`
+      : `Moderate/low selection chance (${score}% < ${threshold}% threshold): insufficient skill overlap.`,
+    matchedSkills: matched,
+  };
 }

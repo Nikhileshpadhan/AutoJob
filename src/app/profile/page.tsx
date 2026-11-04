@@ -1,13 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Upload, Save, CheckCircle2, FileText, Plus, X, Sparkles, RefreshCw } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Upload, Save, CheckCircle2, Plus, X, Sparkles, RefreshCw, UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 
 export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
@@ -88,29 +86,29 @@ export default function ProfilePage() {
       } else {
         const p = data.profile;
         if (p) {
-          if (p.fullName) setFullName(p.fullName);
-          if (p.email) setEmail(p.email);
-          if (p.phone) setPhone(p.phone);
-          if (p.location) setLocation(p.location);
-          if (p.githubUrl) setGithubUrl(p.githubUrl);
-          if (p.linkedinUrl) setLinkedinUrl(p.linkedinUrl);
-          if (p.portfolioUrl) setPortfolioUrl(p.portfolioUrl);
-          if (p.summary) setSummary(p.summary);
-          if (p.skills?.length) setSkills(p.skills);
-          if (p.experience?.length) setExperience(p.experience);
-          if (p.education?.length) setEducation(p.education);
+          setFullName(p.fullName || "");
+          setEmail(p.email || "");
+          setPhone(p.phone || "");
+          setLocation(p.location || "");
+          setGithubUrl(p.githubUrl || "");
+          setLinkedinUrl(p.linkedinUrl || "");
+          setPortfolioUrl(p.portfolioUrl || "");
+          setSummary(p.summary || "");
+          setSkills(p.skills || []);
+          setExperience(p.experience || []);
+          setEducation(p.education || []);
         }
-        alert("Resume parsed successfully! Structured fields have been populated.");
+        alert("Resume parsed and profile fields populated successfully.");
       }
-    } catch (err) {
+    } catch {
       alert("Error uploading resume.");
     } finally {
       setUploading(false);
     }
   }
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSave(e?: React.FormEvent) {
+    if (e) e.preventDefault();
     setSaving(true);
     setSavedSuccess(false);
 
@@ -169,249 +167,221 @@ export default function ProfilePage() {
     setTargetRoles(targetRoles.filter((r) => r !== role));
   }
 
+  if (loading) {
+    return (
+      <div className="space-y-6 max-w-3xl animate-enter">
+        <div className="space-y-2">
+          <div className="skeleton h-4 w-32 rounded" />
+          <div className="skeleton h-7 w-64 rounded" />
+          <div className="skeleton h-4 w-80 rounded" />
+        </div>
+        <div className="skeleton h-32 w-full rounded-md" />
+        <div className="skeleton h-48 w-full rounded-md" />
+        <div className="skeleton h-32 w-full rounded-md" />
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-3xl animate-enter">
       {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Master Profile & Resume Engine</h1>
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+            <UserCheck className="w-3.5 h-3.5" />
+            <span>Candidate context</span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground">
+            Master profile
+          </h1>
           <p className="text-sm text-muted-foreground">
-            Phase 1 onboarding: Ingest Master Resume PDF, extract skills matrix with LLM, and calibrate target roles.
+            Parameters and skills matrix for cover letter tailoring.
           </p>
         </div>
 
-        <Button onClick={handleSave} disabled={saving} size="sm">
+        <Button
+          onClick={() => handleSave()}
+          disabled={saving}
+          size="sm"
+          className="text-xs h-8 px-3.5 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-all duration-150 shrink-0"
+        >
           {savedSuccess ? (
             <>
-              <CheckCircle2 className="w-4 h-4 mr-2 text-emerald-400" />
-              Saved!
+              <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+              Saved
             </>
           ) : (
             <>
-              <Save className="w-4 h-4 mr-2" />
-              Save Profile
+              <Save className="w-3.5 h-3.5 mr-1.5" />
+              Save profile
             </>
           )}
         </Button>
       </div>
 
-      {/* PDF Upload Card */}
-      <Card className="border-dashed border-2 bg-muted/10">
-        <CardContent className="p-6 text-center space-y-3">
-          <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center mx-auto">
-            {uploading ? (
-              <RefreshCw className="w-6 h-6 animate-spin" />
-            ) : (
-              <Upload className="w-6 h-6" />
-            )}
+      {/* PDF Upload */}
+      <div className="border border-dashed border-border bg-card/40 rounded-md p-6 text-center space-y-3 hover:border-primary/30 transition-colors duration-200">
+        <div className="w-10 h-10 rounded-md bg-secondary border border-border flex items-center justify-center mx-auto text-primary">
+          {uploading ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Upload className="w-4 h-4" />
+          )}
+        </div>
+        <div className="space-y-0.5">
+          <h2 className="text-sm font-semibold text-foreground">
+            Upload resume PDF
+          </h2>
+          <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+            Extracts contact info, skills, and experience into your local store.
+          </p>
+        </div>
+
+        <label className="cursor-pointer inline-block">
+          <input
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={handleFileUpload}
+            disabled={uploading}
+          />
+          <span className="inline-flex items-center justify-center rounded-md text-xs font-medium border border-border bg-card hover:bg-secondary px-3.5 py-1.5 cursor-pointer transition-colors duration-150">
+            <Sparkles className="w-3.5 h-3.5 mr-1.5 text-primary" />
+            {uploading ? "Extracting…" : "Select resume PDF"}
+          </span>
+        </label>
+      </div>
+
+      {/* Profile Form */}
+      <form onSubmit={handleSave} className="space-y-5">
+        {/* Contact Info */}
+        <section className="border border-border bg-card rounded-md overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h2 className="text-sm font-semibold text-foreground">Contact information</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Used for Easy Apply form fields.</p>
           </div>
-          <div>
-            <h3 className="font-semibold text-sm">Upload Master Resume (PDF)</h3>
-            <p className="text-xs text-muted-foreground max-w-sm mx-auto mt-1">
-              Upload your PDF resume. Our zero-shot LLM parser will extract contact details, skills, experience, and education matrix into SQLite.
+
+          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="fullName" className="text-xs text-muted-foreground">Full name</Label>
+              <Input id="fullName" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="e.g. Alex Morgan" className="h-8 text-[13px] rounded-md border-border bg-background" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="email" className="text-xs text-muted-foreground">Email</Label>
+              <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="alex@example.com" className="h-8 text-[13px] rounded-md border-border bg-background" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="phone" className="text-xs text-muted-foreground">Phone</Label>
+              <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 555 123 4567" className="h-8 text-[13px] rounded-md border-border bg-background font-mono" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="location" className="text-xs text-muted-foreground">Location</Label>
+              <Input id="location" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="San Francisco, CA" className="h-8 text-[13px] rounded-md border-border bg-background" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="linkedinUrl" className="text-xs text-muted-foreground">LinkedIn URL</Label>
+              <Input id="linkedinUrl" value={linkedinUrl} onChange={(e) => setLinkedinUrl(e.target.value)} placeholder="linkedin.com/in/username" className="h-8 text-[13px] rounded-md border-border bg-background font-mono" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="githubUrl" className="text-xs text-muted-foreground">GitHub / Portfolio</Label>
+              <Input id="githubUrl" value={githubUrl} onChange={(e) => setGithubUrl(e.target.value)} placeholder="github.com/username" className="h-8 text-[13px] rounded-md border-border bg-background font-mono" />
+            </div>
+          </div>
+        </section>
+
+        {/* Target Roles */}
+        <section className="border border-border bg-card rounded-md overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h2 className="text-sm font-semibold text-foreground">Target Titles &amp; Focus Roles</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Keywords searched during automated sweeps (e.g. Software Engineer Intern, Web Developer Intern, Python Developer).
             </p>
           </div>
 
-          <div className="pt-2">
-            <label className="cursor-pointer">
-              <input
-                type="file"
-                accept="application/pdf"
-                className="hidden"
-                onChange={handleFileUpload}
-                disabled={uploading}
-              />
-              <span className="inline-flex items-center justify-center rounded-md text-xs font-medium border border-input bg-background shadow-xs hover:bg-accent px-4 py-2 cursor-pointer transition-colors">
-                <Sparkles className="w-3.5 h-3.5 mr-1.5 text-primary" />
-                {uploading ? "Parsing with LLM..." : "Select Resume PDF"}
-              </span>
-            </label>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Profile Form */}
-      <form onSubmit={handleSave} className="space-y-6">
-        {/* Contact and Identity Grid */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Personal & Contact Coordinates</CardTitle>
-            <CardDescription>
-              Populated automatically during submission forms and Easy Apply dialogs.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="fullName">Full Name</Label>
-              <Input
-                id="fullName"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="e.g. Alex Morgan"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="email">Email Address</Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="e.g. alex@example.com"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="phone">Phone Number</Label>
-              <Input
-                id="phone"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="e.g. +1 555 123 4567"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="location">Location / City</Label>
-              <Input
-                id="location"
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                placeholder="e.g. San Francisco, CA / Remote"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="linkedinUrl">LinkedIn URL</Label>
-              <Input
-                id="linkedinUrl"
-                value={linkedinUrl}
-                onChange={(e) => setLinkedinUrl(e.target.value)}
-                placeholder="https://linkedin.com/in/username"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="githubUrl">GitHub / Portfolio URL</Label>
-              <Input
-                id="githubUrl"
-                value={githubUrl}
-                onChange={(e) => setGithubUrl(e.target.value)}
-                placeholder="https://github.com/username"
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Target Job Roles (Search Keywords for Crawlers) */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Target Job Keywords & Roles</CardTitle>
-            <CardDescription>
-              Keywords actively monitored and searched across LinkedIn & Internshala crawlers.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
+          <div className="p-4 space-y-3">
             <div className="flex gap-2">
               <Input
-                placeholder="Add role keyword (e.g. Frontend Engineer, Full Stack Developer)..."
+                placeholder="Add target title (e.g. Software Engineer Intern, Full Stack Developer)…"
                 value={newRole}
                 onChange={(e) => setNewRole(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addTargetRole();
-                  }
-                }}
-                className="text-xs"
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTargetRole(); } }}
+                className="h-8 text-[13px] rounded-md border-border bg-background flex-1"
               />
-              <Button type="button" size="sm" onClick={addTargetRole} variant="outline" className="text-xs">
+              <Button type="button" size="sm" onClick={addTargetRole} variant="outline" className="text-xs h-8 px-3 rounded-md border-border bg-card hover:bg-secondary transition-colors duration-150">
                 <Plus className="w-3.5 h-3.5 mr-1" />
                 Add
               </Button>
             </div>
-
-            <div className="flex flex-wrap gap-1.5 pt-1">
+            <div className="flex flex-wrap gap-1.5">
               {targetRoles.map((role) => (
-                <Badge key={role} variant="secondary" className="pl-2.5 pr-1 py-1 text-xs flex items-center gap-1.5">
-                  <span>{role}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeTargetRole(role)}
-                    className="hover:text-destructive p-0.5 rounded-full"
-                  >
+                <span key={role} className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-border bg-secondary/60 text-xs text-foreground hover:border-border/80 transition-colors duration-150">
+                  {role}
+                  <button type="button" onClick={() => removeTargetRole(role)} className="opacity-50 hover:opacity-100 hover:text-destructive transition-opacity duration-150 p-0.5" aria-label={`Remove ${role}`}>
                     <X className="w-3 h-3" />
                   </button>
-                </Badge>
+                </span>
               ))}
+              {targetRoles.length === 0 && (
+                <span className="text-xs text-muted-foreground italic">No target roles added yet</span>
+              )}
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
         {/* Skills Matrix */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Skills Matrix</CardTitle>
-            <CardDescription>
-              Synthesized by LLM to match keywords and auto-complete screening assessments.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
+        <section className="border border-border bg-card rounded-md overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h2 className="text-sm font-semibold text-foreground">Skills matrix</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Referenced by LLM for cover letters and screening answers.</p>
+          </div>
+
+          <div className="p-4 space-y-3">
             <div className="flex gap-2">
               <Input
-                placeholder="Add skill (e.g. Next.js, TypeScript, PostgreSQL)..."
+                placeholder="Add skill (e.g. TypeScript, React)…"
                 value={newSkill}
                 onChange={(e) => setNewSkill(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addSkill();
-                  }
-                }}
-                className="text-xs"
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSkill(); } }}
+                className="h-8 text-[13px] rounded-md border-border bg-background flex-1"
               />
-              <Button type="button" size="sm" onClick={addSkill} variant="outline" className="text-xs">
+              <Button type="button" size="sm" onClick={addSkill} variant="outline" className="text-xs h-8 px-3 rounded-md border-border bg-card hover:bg-secondary transition-colors duration-150">
                 <Plus className="w-3.5 h-3.5 mr-1" />
                 Add
               </Button>
             </div>
-
-            <div className="flex flex-wrap gap-1.5 pt-1">
+            <div className="flex flex-wrap gap-1.5">
               {skills.map((skill) => (
-                <Badge key={skill} variant="outline" className="pl-2.5 pr-1 py-1 text-xs flex items-center gap-1.5 bg-background">
-                  <span>{skill}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeSkill(skill)}
-                    className="hover:text-destructive p-0.5 rounded-full"
-                  >
+                <span key={skill} className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-primary/15 bg-primary/5 text-xs text-foreground hover:border-primary/25 transition-colors duration-150">
+                  {skill}
+                  <button type="button" onClick={() => removeSkill(skill)} className="opacity-40 hover:opacity-100 hover:text-destructive transition-opacity duration-150 p-0.5" aria-label={`Remove ${skill}`}>
                     <X className="w-3 h-3" />
                   </button>
-                </Badge>
+                </span>
               ))}
+              {skills.length === 0 && (
+                <span className="text-xs text-muted-foreground italic">No skills added yet</span>
+              )}
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
-        {/* Executive Summary */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Professional Summary & Base Context</CardTitle>
-            <CardDescription>
-              Supplied as foundational grounding to Gemini/Groq when tailoring the 150-word cover letters.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        {/* Summary */}
+        <section className="border border-border bg-card rounded-md overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h2 className="text-sm font-semibold text-foreground">Background summary</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Grounding narrative for LLM prompts.</p>
+          </div>
+
+          <div className="p-4">
             <Textarea
               rows={4}
               value={summary}
               onChange={(e) => setSummary(e.target.value)}
-              placeholder="Provide a concise 2-3 sentence overview of your domain expertise, key accomplishments, and engineering background..."
-              className="text-xs leading-relaxed"
+              placeholder="Concise overview of your expertise, achievements, and strengths…"
+              className="text-[13px] leading-relaxed rounded-md border-border bg-background resize-y"
             />
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </form>
     </div>
   );

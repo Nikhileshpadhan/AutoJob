@@ -1,19 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Search, Filter, Eye, RefreshCw, Briefcase, ExternalLink } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Download, Search, Eye, RefreshCw, ExternalLink, Copy, Check, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -36,6 +26,19 @@ interface ApplicationRecord {
   notes?: string;
 }
 
+function SkeletonRow() {
+  return (
+    <tr>
+      <td className="py-3 px-4"><div className="skeleton h-3 w-24 rounded" /></td>
+      <td className="py-3 px-4"><div className="skeleton h-5 w-16 rounded" /></td>
+      <td className="py-3 px-4"><div className="skeleton h-3 w-28 rounded" /></td>
+      <td className="py-3 px-4"><div className="skeleton h-3 w-32 rounded" /></td>
+      <td className="py-3 px-4"><div className="skeleton h-5 w-16 rounded" /></td>
+      <td className="py-3 px-4 text-right"><div className="skeleton h-6 w-12 rounded ml-auto" /></td>
+    </tr>
+  );
+}
+
 export default function ApplicationsPage() {
   const [applications, setApplications] = useState<ApplicationRecord[]>([]);
   const [search, setSearch] = useState("");
@@ -43,6 +46,7 @@ export default function ApplicationsPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [selectedApp, setSelectedApp] = useState<ApplicationRecord | null>(null);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   async function loadApplications() {
     setLoading(true);
@@ -73,200 +77,259 @@ export default function ApplicationsPage() {
     loadApplications();
   }
 
+  function handleCopyLetter() {
+    if (!selectedApp?.tailored_letter) return;
+    navigator.clipboard.writeText(selectedApp.tailored_letter);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function getStatusStyle(status: string) {
+    switch (status) {
+      case "applied":
+        return "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+      case "captcha_blocked":
+        return "bg-destructive/10 text-destructive border border-destructive/20";
+      case "failed":
+        return "bg-rose-500/10 text-rose-400 border border-rose-500/20";
+      case "in_progress":
+        return "bg-amber-500/10 text-amber-400 border border-amber-500/20";
+      default:
+        return "bg-secondary text-muted-foreground border border-border";
+    }
+  }
+
+  function getPlatformStyle(platform: string) {
+    return platform === "linkedin"
+      ? "bg-sky-500/10 text-sky-400 border border-sky-500/20"
+      : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+  }
+
   return (
-    <div className="space-y-6">
-      {/* Top Banner and Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Application History Grid</h1>
+    <div className="space-y-5 animate-enter">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <span>Application records</span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground">
+            Applications
+          </h1>
           <p className="text-sm text-muted-foreground">
-            High-density tracking matrix of automated submissions with tailored cover letters and RFC 4180 CSV export.
+            Audit trail of submissions, cover letters, and exportable records.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 shrink-0">
           <Button
             variant="outline"
             size="sm"
             onClick={() => exportApplicationsToCSV(applications)}
             disabled={applications.length === 0}
-            className="text-xs"
+            className="text-xs h-8 px-3 rounded-md border-border bg-card hover:bg-secondary transition-colors duration-150"
           >
-            <Download className="w-3.5 h-3.5 mr-2" />
-            Universal CSV Export
+            <Download className="w-3.5 h-3.5 mr-1.5" />
+            Export CSV
           </Button>
-
-          <Button variant="outline" size="sm" onClick={loadApplications} disabled={loading} className="text-xs">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadApplications}
+            disabled={loading}
+            className="text-xs h-8 px-3 rounded-md border-border bg-card hover:bg-secondary transition-colors duration-150"
+          >
             <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
-      <Card>
-        <CardContent className="p-4">
-          <form onSubmit={handleSearchSubmit} className="flex flex-col sm:flex-row items-center gap-3">
-            <div className="relative flex-1 w-full">
-              <Search className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
-              <Input
-                placeholder="Search by company or role..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 text-xs h-9"
-              />
-            </div>
+      {/* Search & Filters */}
+      <div className="border border-border bg-card rounded-md p-3">
+        <form onSubmit={handleSearchSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search by company or job title…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 text-[13px] h-8 rounded-md border-border bg-background"
+            />
+          </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              {/* Platform Filter */}
-              <select
-                value={platformFilter}
-                onChange={(e) => setPlatformFilter(e.target.value)}
-                aria-label="Filter by Platform"
-                className="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground"
-              >
-                <option value="all">All Platforms</option>
-                <option value="linkedin">LinkedIn</option>
-                <option value="internshala">Internshala</option>
-              </select>
+          <div className="flex items-center gap-2">
+            <select
+              value={platformFilter}
+              onChange={(e) => setPlatformFilter(e.target.value)}
+              aria-label="Filter by Platform"
+              className="h-8 px-2.5 text-xs rounded-md border border-border bg-background text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-colors duration-150"
+            >
+              <option value="all">All platforms</option>
+              <option value="linkedin">LinkedIn</option>
+              <option value="internshala">Internshala</option>
+            </select>
 
-              {/* Status Filter */}
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                aria-label="Filter by Status"
-                className="h-9 px-3 text-xs rounded-md border border-input bg-background text-foreground"
-              >
-                <option value="all">All Statuses</option>
-                <option value="applied">Applied</option>
-                <option value="skipped">Skipped / Dry Run</option>
-                <option value="failed">Failed</option>
-                <option value="captcha_blocked">CAPTCHA Blocked</option>
-              </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              aria-label="Filter by Status"
+              className="h-8 px-2.5 text-xs rounded-md border border-border bg-background text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-colors duration-150"
+            >
+              <option value="all">All statuses</option>
+              <option value="applied">Applied</option>
+              <option value="skipped">Skipped</option>
+              <option value="failed">Failed</option>
+              <option value="captcha_blocked">Blocked</option>
+            </select>
 
-              <Button type="submit" size="sm" className="text-xs h-9">
-                Filter
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+            <Button
+              type="submit"
+              size="sm"
+              className="text-xs h-8 px-3.5 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors duration-150"
+            >
+              Apply
+            </Button>
+          </div>
+        </form>
+      </div>
 
-      {/* High-Density Data Table */}
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[140px]">Timestamp</TableHead>
-                <TableHead className="w-[110px]">Platform</TableHead>
-                <TableHead>Company</TableHead>
-                <TableHead>Position</TableHead>
-                <TableHead className="w-[120px]">Status</TableHead>
-                <TableHead className="w-[110px] text-right">Tailored Letter</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+      {/* Data Table */}
+      <div className="border border-border bg-card rounded-md overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-[13px]">
+            <thead className="bg-secondary/25 border-b border-border text-muted-foreground">
+              <tr>
+                <th className="py-2.5 px-4 font-medium text-xs w-[140px]">Date</th>
+                <th className="py-2.5 px-4 font-medium text-xs w-[100px]">Platform</th>
+                <th className="py-2.5 px-4 font-medium text-xs">Company</th>
+                <th className="py-2.5 px-4 font-medium text-xs">Position</th>
+                <th className="py-2.5 px-4 font-medium text-xs w-[120px]">Status</th>
+                <th className="py-2.5 px-4 font-medium text-xs w-[90px] text-right">Letter</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/30">
               {loading ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
-                    <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 opacity-50" />
-                    Loading application records...
-                  </TableCell>
-                </TableRow>
+                Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)
               ) : applications.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
-                    No applications matched your filter criteria.
-                  </TableCell>
-                </TableRow>
+                <tr>
+                  <td colSpan={6} className="h-40 text-center">
+                    <div className="space-y-2">
+                      <div className="w-10 h-10 rounded-md bg-secondary border border-border flex items-center justify-center mx-auto">
+                        <FileSpreadsheet className="w-4 h-4 text-muted-foreground" />
+                      </div>
+                      <p className="text-sm text-muted-foreground">No records match your filters</p>
+                    </div>
+                  </td>
+                </tr>
               ) : (
                 applications.map((app) => (
-                  <TableRow key={app.id}>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
+                  <tr key={app.id} className="hover:bg-secondary/10 transition-colors duration-100">
+                    <td className="py-2.5 px-4 num text-muted-foreground whitespace-nowrap text-xs">
                       {formatDate(app.timestamp)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={app.platform === "linkedin" ? "linkedin" : "internshala"}
-                        className="text-[10px] uppercase font-bold"
-                      >
+                    </td>
+                    <td className="py-2.5 px-4">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium capitalize ${getPlatformStyle(app.platform)}`}>
                         {app.platform}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-semibold text-sm">
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4">
                       <div className="flex items-center gap-1.5">
-                        <span>{app.company}</span>
+                        <span className="font-medium text-foreground truncate max-w-[180px]">{app.company}</span>
                         {app.job_url ? (
                           <a
                             href={app.job_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-muted-foreground hover:text-primary"
+                            className="text-muted-foreground hover:text-primary transition-colors duration-150 shrink-0"
                           >
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         ) : null}
                       </div>
-                    </TableCell>
-                    <TableCell className="text-sm">{app.position}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          app.status === "applied"
-                            ? "applied"
-                            : app.status === "captcha_blocked"
-                            ? "blocked"
-                            : "pending"
-                        }
-                      >
-                        {app.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
+                    </td>
+                    <td className="py-2.5 px-4 text-foreground truncate max-w-[200px]">{app.position}</td>
+                    <td className="py-2.5 px-4">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium capitalize ${getStatusStyle(app.status)}`}>
+                        {app.status.replace("_", " ")}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-right">
                       {app.tailored_letter ? (
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setSelectedApp(app)}
-                          className="h-7 text-xs px-2 text-primary hover:text-primary"
+                          onClick={() => { setSelectedApp(app); setCopied(false); }}
+                          className="h-7 text-xs px-2 text-primary hover:text-primary hover:bg-primary/8 transition-colors duration-150"
                         >
                           <Eye className="w-3.5 h-3.5 mr-1" />
                           View
                         </Button>
                       ) : (
-                        <span className="text-xs text-muted-foreground">-</span>
+                        <span className="text-muted-foreground/40">—</span>
                       )}
-                    </TableCell>
-                  </TableRow>
+                    </td>
+                  </tr>
                 ))
               )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+            </tbody>
+          </table>
+        </div>
 
-      {/* Modal Dialog for Tailored Letter */}
+        <div className="p-3 border-t border-border bg-card/40 flex items-center justify-between text-[11px] text-muted-foreground">
+          <span className="num">Records: {applications.length}</span>
+          <span>RFC 4180 compliant</span>
+        </div>
+      </div>
+
+      {/* Cover Letter Modal */}
       <Dialog open={!!selectedApp} onOpenChange={(open) => !open && setSelectedApp(null)}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-base">
-              <Briefcase className="w-4 h-4 text-primary" />
-              Tailored Letter — {selectedApp?.company}
+        <DialogContent className="max-w-xl border-border bg-card text-foreground rounded-md">
+          <DialogHeader className="space-y-1">
+            <DialogTitle className="text-base font-semibold">
+              Cover letter — {selectedApp?.company}
             </DialogTitle>
-            <DialogDescription>
-              Role: <span className="font-semibold text-foreground">{selectedApp?.position}</span> • Platform:{" "}
-              <span className="capitalize text-foreground">{selectedApp?.platform}</span>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Position: <span className="text-foreground">{selectedApp?.position}</span> ·{" "}
+              <span className={`capitalize ${
+                selectedApp?.platform === "linkedin" ? "text-sky-400" : "text-emerald-400"
+              }`}>
+                {selectedApp?.platform}
+              </span>
             </DialogDescription>
           </DialogHeader>
 
-          <div className="mt-3 p-4 rounded-lg bg-muted/30 border border-border/80 text-sm leading-relaxed whitespace-pre-wrap font-mono text-xs">
-            {selectedApp?.tailored_letter || "No tailored letter recorded for this submission."}
+          <div className="relative mt-2">
+            <div className="p-4 rounded-md bg-background border border-border text-[13px] leading-relaxed whitespace-pre-wrap font-mono max-h-[360px] overflow-y-auto terminal-scroll">
+              {selectedApp?.tailored_letter || "No tailored letter recorded for this submission."}
+            </div>
+
+            {selectedApp?.tailored_letter ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyLetter}
+                className="absolute top-2 right-2 h-7 px-2.5 text-xs border-border bg-card text-foreground hover:bg-secondary transition-colors duration-150"
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-3 h-3 mr-1 text-primary" />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3 h-3 mr-1" />
+                    Copy
+                  </>
+                )}
+              </Button>
+            ) : null}
           </div>
 
           {selectedApp?.notes ? (
-            <div className="text-xs text-muted-foreground pt-1">
-              <span className="font-semibold">Notes:</span> {selectedApp.notes}
+            <div className="text-xs text-muted-foreground pt-2 border-t border-border">
+              <span className="font-medium text-foreground">Notes:</span> {selectedApp.notes}
             </div>
           ) : null}
         </DialogContent>

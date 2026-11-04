@@ -32,6 +32,14 @@ export async function GET() {
       }
     }
 
+    const settingsRes = await db.execute("SELECT key, value FROM system_settings WHERE key IN ('opportunity_type', 'min_match_score')");
+    let opportunityType = "internship";
+    let minMatchScore = "65";
+    for (const r of settingsRes.rows) {
+      if (r.key === "opportunity_type" && r.value) opportunityType = r.value as string;
+      if (r.key === "min_match_score" && r.value) minMatchScore = r.value as string;
+    }
+
     return NextResponse.json({
       totalApplied,
       todayApplied: quota.applied_count,
@@ -40,6 +48,9 @@ export async function GET() {
       pendingAlerts,
       platformBreakdown,
       todayDate: quota.date,
+      opportunityType,
+      minMatchScore,
+      platforms: quota.platforms,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal Server Error";

@@ -65,8 +65,20 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS daily_quota (
       date TEXT PRIMARY KEY, -- 'YYYY-MM-DD'
       applied_count INTEGER DEFAULT 0,
-      max_cap INTEGER DEFAULT 5,
+      max_cap INTEGER DEFAULT 10,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Independent per-platform quota tracking (e.g. 5 LinkedIn, 5 Internshala)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS platform_daily_quota (
+      date TEXT NOT NULL,
+      platform TEXT NOT NULL, -- 'linkedin' | 'internshala'
+      applied_count INTEGER DEFAULT 0,
+      max_cap INTEGER DEFAULT 5,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (date, platform)
     );
   `);
 
@@ -102,7 +114,14 @@ export async function initDatabase() {
 
   // Set default settings if not exists
   const defaultSettings: Record<string, string> = {
-    daily_cap: "5",
+    daily_cap: "10",
+    linkedin_daily_cap: "5",
+    internshala_daily_cap: "5",
+    opportunity_type: "internship", // 'internship' | 'job' (Default to internship for students)
+    workplace_type: "remote", // 'any' | 'remote' | 'hybrid' | 'on_site'
+    target_location: "Remote",
+    apply_type: "all", // 'all' (Easy Apply + Direct Company Apply Links) | 'easy_apply_only'
+    min_match_score: "65", // Only apply to high selection chance matches (0 - 100)
     active_llm: "gemini", // 'gemini' | 'groq'
     telegram_enabled: "true",
     auto_apply_enabled: "true",
@@ -116,49 +135,95 @@ export async function initDatabase() {
   }
 }
 
-// Helper functions for daily quota (Strict cap of 5/day)
-export async function getTodayQuota() {
+export interface PlatformQuota {
+  date: string;
+  platform: "linkedin" | "internshala";
+  applied_count: number;
+  max_cap: number;
+  remaining: number;
+}
+
+export interface CombinedQuota {
+  date: string;
+  applied_count: number;
+  max_cap: number;
+  remaining: number;
+  platforms: {
+    linkedin: PlatformQuota;
+    internshala: PlatformQuota;
+  };
+}
+
+/**
+ * Retrieves the daily quota for a specific platform.
+ */
+export async function getTodayPlatformQuota(platform: "linkedin" | "internshala"): Promise<PlatformQuota> {
   const db = getDb();
   const todayStr = new Date().toISOString().split("T")[0];
 
-  const res = await db.execute({
-    sql: "SELECT * FROM daily_quota WHERE date = ?",
-    args: [todayStr],
-  });
-
+  // Get user-configured cap for this platform
+  const capKey = `${platform}_daily_cap`;
   const capSetting = await db.execute({
-    sql: "SELECT value FROM system_settings WHERE key = 'daily_cap'",
-    args: [],
+    sql: "SELECT value FROM system_settings WHERE key = ?",
+    args: [capKey],
   });
   const maxCap = capSetting.rows[0]?.value ? parseInt(capSetting.rows[0].value as string, 10) : 5;
 
+  const res = await db.execute({
+    sql: "SELECT * FROM platform_daily_quota WHERE date = ? AND platform = ?",
+    args: [todayStr, platform],
+  });
+
   if (res.rows.length === 0) {
     await db.execute({
-      sql: "INSERT INTO daily_quota (date, applied_count, max_cap) VALUES (?, 0, ?)",
-      args: [todayStr, maxCap],
+      sql: "INSERT INTO platform_daily_quota (date, platform, applied_count, max_cap) VALUES (?, ?, 0, ?)",
+      args: [todayStr, platform, maxCap],
     });
-    return { date: todayStr, applied_count: 0, max_cap: maxCap, remaining: maxCap };
+    return { date: todayStr, platform, applied_count: 0, max_cap: maxCap, remaining: maxCap };
   }
 
   const row = res.rows[0];
   const count = Number(row.applied_count || 0);
   const cap = Number(row.max_cap || maxCap);
+
   return {
     date: todayStr,
+    platform,
     applied_count: count,
     max_cap: cap,
     remaining: Math.max(0, cap - count),
   };
 }
 
-export async function incrementTodayQuota() {
+/**
+ * Increments the daily quota for a specific platform and syncs the aggregate table.
+ */
+export async function incrementTodayPlatformQuota(platform: "linkedin" | "internshala"): Promise<PlatformQuota> {
   const db = getDb();
-  const quota = await getTodayQuota();
+  const quota = await getTodayPlatformQuota(platform);
   const nextCount = quota.applied_count + 1;
 
   await db.execute({
-    sql: "UPDATE daily_quota SET applied_count = ?, updated_at = CURRENT_TIMESTAMP WHERE date = ?",
-    args: [nextCount, quota.date],
+    sql: "UPDATE platform_daily_quota SET applied_count = ?, updated_at = CURRENT_TIMESTAMP WHERE date = ? AND platform = ?",
+    args: [nextCount, quota.date, platform],
+  });
+
+  // Sync aggregate daily_quota table
+  const totalRes = await db.execute({
+    sql: "SELECT SUM(applied_count) as total_applied FROM platform_daily_quota WHERE date = ?",
+    args: [quota.date],
+  });
+  const totalApplied = Number(totalRes.rows[0]?.total_applied || nextCount);
+
+  const linkedinCap = await getTodayPlatformQuota("linkedin");
+  const internshalaCap = await getTodayPlatformQuota("internshala");
+  const totalCap = linkedinCap.max_cap + internshalaCap.max_cap;
+
+  await db.execute({
+    sql: `INSERT INTO daily_quota (date, applied_count, max_cap) 
+          VALUES (?, ?, ?) 
+          ON CONFLICT(date) DO UPDATE SET applied_count = ?, max_cap = ?, updated_at = CURRENT_TIMESTAMP`,
+    args: [quota.date, totalApplied, totalCap, totalApplied, totalCap],
   });
 
   return {
@@ -166,4 +231,34 @@ export async function incrementTodayQuota() {
     applied_count: nextCount,
     remaining: Math.max(0, quota.max_cap - nextCount),
   };
+}
+
+/**
+ * Helper function returning overall quota with platform breakdown.
+ */
+export async function getTodayQuota(): Promise<CombinedQuota> {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const [linkedin, internshala] = await Promise.all([
+    getTodayPlatformQuota("linkedin"),
+    getTodayPlatformQuota("internshala"),
+  ]);
+
+  const appliedCount = linkedin.applied_count + internshala.applied_count;
+  const maxCap = linkedin.max_cap + internshala.max_cap;
+  const remaining = linkedin.remaining + internshala.remaining;
+
+  return {
+    date: todayStr,
+    applied_count: appliedCount,
+    max_cap: maxCap,
+    remaining,
+    platforms: {
+      linkedin,
+      internshala,
+    },
+  };
+}
+
+export async function incrementTodayQuota(platform: "linkedin" | "internshala" = "linkedin") {
+  return await incrementTodayPlatformQuota(platform);
 }

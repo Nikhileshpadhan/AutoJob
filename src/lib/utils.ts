@@ -7,11 +7,16 @@ export function cn(...inputs: ClassValue[]) {
 
 export function formatDate(timestamp: string | number | Date): string {
   if (!timestamp) return "-";
-  const date = new Date(timestamp);
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  try {
+    const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return String(timestamp);
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  } catch {
+    return String(timestamp);
+  }
 }
