@@ -4,7 +4,7 @@
  * and triggers immediate native file download without a round-trip to the server.
  */
 
-function escapeCsvField(val: unknown): string {
+export function escapeCsvField(val: unknown): string {
   if (val === null || val === undefined) return '""';
   const str = String(val);
   // If value contains comma, quotes, or newlines, quote and double-escape quotes per RFC 4180
@@ -17,10 +17,9 @@ function escapeCsvField(val: unknown): string {
 export function exportApplicationsToCSV(
   applications: Array<Record<string, any>>,
   filenamePrefix: string = "autojob_applications"
-) {
+): boolean {
   if (!applications || applications.length === 0) {
-    alert("No application records available to export.");
-    return;
+    return false;
   }
 
   const headers = [
@@ -30,6 +29,7 @@ export function exportApplicationsToCSV(
     "Company",
     "Position",
     "Status",
+    "Match Score",
     "Job URL",
     "Tailored Cover Letter",
     "Notes",
@@ -37,11 +37,12 @@ export function exportApplicationsToCSV(
 
   const rows = applications.map((app) => [
     escapeCsvField(app.id),
-    escapeCsvField(app.timestamp),
+    escapeCsvField(app.timestamp || app.created_at),
     escapeCsvField(app.platform),
     escapeCsvField(app.company),
     escapeCsvField(app.position),
     escapeCsvField(app.status),
+    escapeCsvField(app.match_score ? `${app.match_score}%` : ""),
     escapeCsvField(app.job_url),
     escapeCsvField(app.tailored_letter),
     escapeCsvField(app.notes),
@@ -61,4 +62,5 @@ export function exportApplicationsToCSV(
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+  return true;
 }

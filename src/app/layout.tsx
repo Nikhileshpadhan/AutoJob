@@ -1,16 +1,29 @@
 import type { Metadata, Viewport } from "next";
+import "@fontsource/geist/400.css";
+import "@fontsource/geist/500.css";
+import "@fontsource/geist/600.css";
+import "@fontsource/geist/700.css";
+import "@fontsource/geist-mono/400.css";
+import "@fontsource/geist-mono/500.css";
+import "@fontsource/ibm-plex-serif/400.css";
+import "@fontsource/ibm-plex-serif/500.css";
+import "@fontsource/ibm-plex-serif/600.css";
+import "@fontsource/ibm-plex-serif/400-italic.css";
+import "@fontsource/ibm-plex-serif/500-italic.css";
 import "./globals.css";
-import { Sidebar } from "@/components/sidebar";
-import { Header } from "@/components/header";
+
+import { AppShell } from "@/components/app-shell";
+import { ToastProvider } from "@/components/ui/toast";
+import { TelemetryProvider } from "@/components/telemetry-provider";
 
 export const metadata: Metadata = {
-  title: "AutoJob — 24/7 Background Job Automation Engine",
+  title: "AutoJob — Autonomous Career Command Center",
   description:
-    "Autonomous multi-platform job application runner with strict daily pacing, dynamic LLM tailoring, and Telegram-backed human-in-the-loop CAPTCHA bypass.",
+    "Autonomous multi-platform job application runner with strict daily pacing, dynamic LLM tailoring, and Telegram-backed human-in-the-loop verification.",
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0f1318",
+  themeColor: "#141516",
   colorScheme: "dark",
 };
 
@@ -21,14 +34,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
-      <body className="min-h-screen bg-background text-foreground antialiased flex selection:bg-primary/20 selection:text-foreground" suppressHydrationWarning>
-        <Sidebar />
-        <div className="flex-1 flex flex-col min-w-0 min-h-screen lg:ml-64">
-          <Header />
-          <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 max-w-[1200px] w-full mx-auto">
-            {children}
-          </main>
-        </div>
+      <body
+        className="min-h-screen bg-[#141516] text-[#FFFFFF] antialiased selection:bg-[#CCF2DF]/20 selection:text-white font-sans"
+        suppressHydrationWarning
+      >
+        <ToastProvider>
+          <TelemetryProvider>
+            <AppShell>{children}</AppShell>
+          </TelemetryProvider>
+        </ToastProvider>
       </body>
     </html>
   );

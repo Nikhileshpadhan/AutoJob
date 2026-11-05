@@ -1,10 +1,12 @@
 import { getDb } from "../db";
+import { decryptSecret } from "../crypto";
 import fs from "node:fs";
 
 interface TelegramConfig {
   botToken?: string;
   chatId?: string;
   apiBaseUrl?: string;
+  enabled?: boolean;
 }
 
 export async function getTelegramConfig(): Promise<TelegramConfig> {
@@ -19,11 +21,14 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
 
   const rawBaseUrl = process.env.TELEGRAM_API_BASE_URL || settings.telegram_api_base_url || "https://api.telegram.org";
   const apiBaseUrl = rawBaseUrl.replace(/\/+$/, "");
+  const rawBotToken = process.env.TELEGRAM_BOT_TOKEN || settings.telegram_bot_token || "";
+  const enabled = (process.env.TELEGRAM_ENABLED || settings.telegram_enabled || "true") === "true";
 
   return {
-    botToken: process.env.TELEGRAM_BOT_TOKEN || settings.telegram_bot_token || "",
+    botToken: decryptSecret(rawBotToken),
     chatId: process.env.TELEGRAM_CHAT_ID || settings.telegram_chat_id || "",
     apiBaseUrl,
+    enabled,
   };
 }
 
@@ -33,10 +38,13 @@ export interface TelegramResult {
 }
 
 export async function sendTelegramMessageDetails(text: string): Promise<TelegramResult> {
-  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org" } = await getTelegramConfig();
+  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org", enabled } = await getTelegramConfig();
+  if (!enabled) {
+    return { success: false, error: "Telegram notifications are disabled in settings." };
+  }
+
   if (!botToken || !chatId) {
     const errorMsg = "Telegram bot token or chat ID is not configured.";
-    console.warn(errorMsg);
     return { success: false, error: errorMsg };
   }
 
@@ -77,9 +85,8 @@ export async function sendTelegramPhoto(params: {
   caption: string;
   photoPathOrBuffer: string | Buffer;
 }): Promise<boolean> {
-  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org" } = await getTelegramConfig();
-  if (!botToken || !chatId) {
-    console.warn("Telegram bot token or chat ID is not configured.");
+  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org", enabled } = await getTelegramConfig();
+  if (!enabled || !botToken || !chatId) {
     return false;
   }
 
@@ -119,7 +126,7 @@ export async function triggerHumanInTheLoopAlert(params: {
   message: string;
   screenshotPath?: string;
   jobDetails?: { company: string; position: string; url?: string };
-}) {
+}): Promise<{ alertId: number }> {
   const db = getDb();
 
   // Log in SQLite alerts table
@@ -129,28 +136,35 @@ export async function triggerHumanInTheLoopAlert(params: {
     args: [params.platform, params.type, params.message, params.screenshotPath || null],
   });
 
-  const alertId = result.lastInsertRowid;
+  const alertId = Number(result.lastInsertRowid);
 
   // Format rich Telegram message
-  const icon = params.type === "captcha" ? "🛡️ [CAPTCHA DETECTED]" : params.type === "otp" ? "🔐 [OTP REQUIRED]" : "⚠️ [INTERVENTION NEEDED]";
+  const icon =
+    params.type === "captcha"
+      ? "🛡️ [CAPTCHA DETECTED]"
+      : params.type === "otp"
+      ? "🔐 [OTP REQUIRED]"
+      : params.type === "login_checkpoint"
+      ? "🔑 [LOGIN REQUIRED]"
+      : "⚠️ [INTERVENTION NEEDED]";
+
   const text = `${icon}
 *Action Required on ${params.platform.toUpperCase()}*
 
 ${params.message}
 
-${params.jobDetails ? `🏢 *Company:* ${params.jobDetails.company}\n💼 *Role:* ${params.jobDetails.position}` : ""}
-
-*Runner status:* Script paused. Please complete the verification in your browser window, then confirm in the AutoJob Dashboard or reply to resume.
+${params.jobDetails ? `🏢 *Company:* ${params.jobDetails.company}\n💼 *Role:* ${params.jobDetails.position}\n` : ""}
+*Runner status:* Script paused. Please complete the verification in your browser window, then confirm in the AutoJob Dashboard.
 *Alert ID:* #${alertId}`;
 
   if (params.screenshotPath && fs.existsSync(params.screenshotPath)) {
-    await sendTelegramPhoto({
+    sendTelegramPhoto({
       caption: text,
       photoPathOrBuffer: params.screenshotPath,
-    });
+    }).catch(() => {});
   } else {
-    await sendTelegramMessage(text);
+    sendTelegramMessage(text).catch(() => {});
   }
 
-  return alertId;
+  return { alertId };
 }

@@ -1,96 +1,143 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Send,
   Save,
-  CheckCircle2,
   Shield,
   Bot,
   Key,
-  SlidersHorizontal,
-  ExternalLink,
   MessageSquare,
-  Lock,
   Sparkles,
   GraduationCap,
   Briefcase,
   Target,
-  Sliders,
+  Radio,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useToast } from "@/components/ui/toast";
+import { useTelemetry } from "@/components/telemetry-provider";
+import { formatHour12 } from "@/lib/automation/pacing";
 
 export default function SettingsPage() {
+  const toast = useToast();
+  const { refreshStats } = useTelemetry();
+
+  // Targeting preferences
   const [opportunityType, setOpportunityType] = useState<"internship" | "job">("internship");
+  const [workplaceType, setWorkplaceType] = useState<"remote" | "hybrid" | "on_site" | "any">("remote");
+  const [targetLocation, setTargetLocation] = useState("Remote");
+  const [applyType, setApplyType] = useState<"easy_apply_only" | "all">("easy_apply_only");
   const [linkedinDailyCap, setLinkedinDailyCap] = useState("5");
   const [internshalaDailyCap, setInternshalaDailyCap] = useState("5");
   const [minMatchScore, setMinMatchScore] = useState("65");
 
+  // Pacing & Operating Window Settings
+  const [pacingEnabled, setPacingEnabled] = useState("true");
+  const [ignoreTimeWindow, setIgnoreTimeWindow] = useState("false");
+  const [activeWindowStart, setActiveWindowStart] = useState("9");
+  const [activeWindowEnd, setActiveWindowEnd] = useState("23");
+  const [minRestMinutes, setMinRestMinutes] = useState("20");
+  const [maxRestMinutes, setMaxRestMinutes] = useState("60");
+
+  // LLM Provider & Model
+  const [activeLlm, setActiveLlm] = useState<"gemini" | "groq">("gemini");
+  const [geminiModel, setGeminiModel] = useState("gemini-2.5-flash");
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [groqApiKey, setGroqApiKey] = useState("");
-  const [activeLlm, setActiveLlm] = useState("gemini");
+  const [geminiConfigured, setGeminiConfigured] = useState(false);
+  const [groqConfigured, setGroqConfigured] = useState(false);
+
+  // Telegram Bridge
+  const [telegramEnabled, setTelegramEnabled] = useState("true");
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramApiBaseUrl, setTelegramApiBaseUrl] = useState("");
+  const [telegramConfigured, setTelegramConfigured] = useState(false);
 
   const [saving, setSaving] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  async function fetchSettings() {
+    try {
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const data = await res.json();
+        const s = data.settings;
+        if (s) {
+          setOpportunityType(s.opportunity_type || "internship");
+          setWorkplaceType(s.workplace_type || "remote");
+          setTargetLocation(s.target_location || "Remote");
+          setApplyType(s.apply_type || "easy_apply_only");
+          setLinkedinDailyCap(s.linkedin_daily_cap || "5");
+          setInternshalaDailyCap(s.internshala_daily_cap || "5");
+          setMinMatchScore(s.min_match_score || "65");
+          setPacingEnabled(s.pacing_enabled || "true");
+          setIgnoreTimeWindow(s.ignore_time_window || "false");
+          setActiveWindowStart(s.active_window_start || "9");
+          setActiveWindowEnd(s.active_window_end || "23");
+          setMinRestMinutes(s.min_rest_minutes || "20");
+          setMaxRestMinutes(s.max_rest_minutes || "60");
+
+          setActiveLlm(s.active_llm || "gemini");
+          setGeminiModel(s.gemini_model || "gemini-2.5-flash");
+          setGeminiConfigured(Boolean(s.gemini_api_key_configured));
+          setGroqConfigured(Boolean(s.groq_api_key_configured));
+
+          setTelegramEnabled(s.telegram_enabled || "true");
+          setTelegramChatId(s.telegram_chat_id || "");
+          setTelegramApiBaseUrl(s.telegram_api_base_url || "");
+          setTelegramConfigured(Boolean(s.telegram_bot_token_configured));
+        }
+      }
+    } catch (err) {
+      toast.error("Could not load configuration settings.", "Settings Load Error");
+    }
+  }
 
   useEffect(() => {
-    async function fetchSettings() {
-      try {
-        const res = await fetch("/api/settings");
-        if (res.ok) {
-          const data = await res.json();
-          const s = data.settings;
-          if (s) {
-            setOpportunityType(s.opportunity_type || "internship");
-            setLinkedinDailyCap(s.linkedin_daily_cap || "5");
-            setInternshalaDailyCap(s.internshala_daily_cap || "5");
-            setMinMatchScore(s.min_match_score || "65");
-            setActiveLlm(s.active_llm || "gemini");
-            setTelegramChatId(s.telegram_chat_id || "");
-            if (s.gemini_api_key === "configured") setGeminiApiKey("••••••••••••••••");
-            if (s.groq_api_key === "configured") setGroqApiKey("••••••••••••••••");
-            if (s.telegram_bot_token === "configured") setTelegramBotToken("••••••••••••••••");
-          }
-        }
-      } catch (err) {
-        console.error("Failed to load settings:", err);
-      }
-    }
-
     fetchSettings();
   }, []);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setSavedSuccess(false);
 
     const totalCap = (parseInt(linkedinDailyCap, 10) || 5) + (parseInt(internshalaDailyCap, 10) || 5);
 
     const payload: Record<string, string> = {
       opportunity_type: opportunityType,
+      workplace_type: workplaceType,
+      target_location: targetLocation,
+      apply_type: applyType,
       linkedin_daily_cap: linkedinDailyCap,
       internshala_daily_cap: internshalaDailyCap,
       daily_cap: totalCap.toString(),
       min_match_score: minMatchScore,
+      pacing_enabled: pacingEnabled,
+      ignore_time_window: ignoreTimeWindow,
+      active_window_start: activeWindowStart,
+      active_window_end: activeWindowEnd,
+      min_rest_minutes: minRestMinutes,
+      max_rest_minutes: maxRestMinutes,
       active_llm: activeLlm,
+      gemini_model: geminiModel,
+      telegram_enabled: telegramEnabled,
       telegram_chat_id: telegramChatId,
+      telegram_api_base_url: telegramApiBaseUrl,
     };
 
-    if (geminiApiKey && !geminiApiKey.includes("•••")) {
-      payload.gemini_api_key = geminiApiKey;
+    if (geminiApiKey.trim()) {
+      payload.gemini_api_key = geminiApiKey.trim();
     }
-    if (groqApiKey && !groqApiKey.includes("•••")) {
-      payload.groq_api_key = groqApiKey;
+    if (groqApiKey.trim()) {
+      payload.groq_api_key = groqApiKey.trim();
     }
-    if (telegramBotToken && !telegramBotToken.includes("•••")) {
-      payload.telegram_bot_token = telegramBotToken;
+    if (telegramBotToken.trim()) {
+      payload.telegram_bot_token = telegramBotToken.trim();
     }
 
     try {
@@ -101,15 +148,37 @@ export default function SettingsPage() {
       });
 
       if (res.ok) {
-        setSavedSuccess(true);
-        setTimeout(() => setSavedSuccess(false), 3000);
+        toast.success("System and targeting settings persisted successfully.", "Saved");
+        setGeminiApiKey("");
+        setGroqApiKey("");
+        setTelegramBotToken("");
+        await fetchSettings();
+        await refreshStats();
       } else {
-        alert("Failed to save settings.");
+        const data = await res.json();
+        toast.error(data.error || "Failed to save settings.", "Error");
       }
     } catch {
-      alert("Network error.");
+      toast.error("Network error saving settings.", "Error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function clearSecret(key: "gemini_api_key" | "groq_api_key" | "telegram_bot_token") {
+    if (!confirm(`Are you sure you want to clear the configured ${key.replace(/_/g, " ")}?`)) return;
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: "" }),
+      });
+      if (res.ok) {
+        toast.success(`Cleared ${key.replace(/_/g, " ")}.`, "Revoked");
+        await fetchSettings();
+      }
+    } catch (err) {
+      toast.error("Failed to clear secret.", "Error");
     }
   }
 
@@ -118,440 +187,550 @@ export default function SettingsPage() {
     setTestResult(null);
 
     try {
-      const res = await fetch("/api/telegram/test", { method: "POST" });
+      const res = await fetch("/api/telegram/test", {
+        method: "POST",
+      });
       const data = await res.json();
-      if (res.ok) {
-        setTestResult("Success: Test ping delivered to your Telegram chat.");
+      if (res.ok && data.success) {
+        setTestResult({ success: true, message: "Test alert dispatched! Check your Telegram app." });
+        toast.success("Telegram test message delivered!", "Telegram Verified");
       } else {
-        setTestResult(`Error: ${data.error || "Failed to deliver Telegram message."}`);
+        setTestResult({ success: false, message: data.error || "Telegram message failed to send." });
+        toast.error(data.error || "Telegram connection failed.", "Telegram Error");
       }
-    } catch {
-      setTestResult("Network error connecting to Telegram API.");
+    } catch (err) {
+      setTestResult({ success: false, message: "Network error connecting to Telegram route." });
     } finally {
       setTestingTelegram(false);
     }
   }
 
   return (
-    <div className="space-y-6 max-w-4xl animate-enter">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>Preferences & Targeting</span>
+    <form onSubmit={handleSave} className="space-y-8 max-w-5xl animate-enter">
+      {/* Header — Aronya display heading */}
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6 pb-6 border-b border-[#303132]">
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border border-[#CCF2DF]/40 bg-[#CCF2DF]/10 text-[#CCF2DF]">
+              ENGINE PREFERENCES
+            </span>
+            <span className="text-xs uppercase font-mono tracking-widest text-[#B8B9B9]">
+              SYSTEM CONFIGURATION
+            </span>
           </div>
-          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground">
-            System & Targeting Settings
+
+          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-normal tracking-[-0.03em] text-white">
+            SETTINGS & <span className="font-serif italic font-normal text-white">TARGETING</span>
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Choose between Internships and Jobs, configure per-platform daily caps, and tune selection fit.
+          <p className="text-sm text-[#CCF2DF] font-light max-w-2xl leading-relaxed">
+            Targeting constraints, daily safety thresholds, active operating windows, LLM routing, and Telegram verification.
           </p>
         </div>
 
         <Button
-          onClick={handleSave}
+          type="submit"
+          size="lg"
           disabled={saving}
-          size="sm"
-          className="text-xs h-8 px-4 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-all duration-150 shrink-0"
+          className="text-xs h-12 px-6"
         >
-          {savedSuccess ? (
-            <>
-              <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-              Saved
-            </>
-          ) : (
-            <>
-              <Save className="w-3.5 h-3.5 mr-1.5" />
-              Save Configuration
-            </>
-          )}
+          <Save className={`w-3.5 h-3.5 mr-2 ${saving ? "animate-spin" : ""}`} />
+          Save Preferences
         </Button>
       </div>
 
-      <form onSubmit={handleSave} className="space-y-5">
-        {/* Opportunity Type: Internship vs Job */}
-        <section className="border border-border bg-card rounded-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Target className="w-4 h-4 text-primary" />
-                <h2 className="text-sm font-semibold text-foreground">
-                  Opportunity Search Mode (Choose One)
-                </h2>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Select whether AutoJob should search and apply for Student Internships or Full-Time Jobs.
-              </p>
-            </div>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 capitalize">
-              Active: {opportunityType}
-            </span>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* SECTION 1: Targeting Preferences */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center gap-2.5 border-b border-[#303132] pb-3.5">
+            <Target className="w-4 h-4 text-[#CCF2DF]" />
+            <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+              Targeting & Opportunity Rules
+            </h2>
           </div>
 
-          <div className="p-4 space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Option 1: Internship */}
-              <div
+          {/* Opportunity Type */}
+          <div className="space-y-2">
+            <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Opportunity Mode</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
                 onClick={() => setOpportunityType("internship")}
-                className={`p-4 rounded-md border cursor-pointer transition-all duration-150 relative ${
+                className={`p-3 rounded-[8px] border-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
                   opportunityType === "internship"
-                    ? "border-primary bg-primary/8 shadow-sm"
-                    : "border-border bg-secondary/15 hover:border-border/80"
+                    ? "border-white bg-transparent text-white font-bold"
+                    : "border-[#303132] bg-transparent text-[#B8B9B9] hover:border-white/50"
                 }`}
               >
-                <div className="flex items-start gap-3">
-                  <div
-                    className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${
-                      opportunityType === "internship"
-                        ? "bg-primary text-primary-foreground font-semibold"
-                        : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    <GraduationCap className="w-4 h-4" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-foreground">
-                        Student Internship Mode
-                      </span>
-                      {opportunityType === "internship" && (
-                        <span className="text-[10px] px-1.5 py-0.2 bg-primary text-primary-foreground rounded font-medium">
-                          Selected
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Filters for student internships, traineeships, and junior roles. Auto-disqualifies senior/staff requirements and targets Internshala Internship Portal &amp; LinkedIn Internship filters (<code className="text-[11px] bg-background px-1 py-0.5 rounded font-mono">&amp;f_E=1&amp;f_JT=I</code>).
-                    </p>
-                  </div>
-                </div>
-              </div>
+                <GraduationCap className="w-4 h-4 text-[#CCF2DF]" />
+                Internship Mode
+              </button>
 
-              {/* Option 2: Full-Time Job */}
-              <div
+              <button
+                type="button"
                 onClick={() => setOpportunityType("job")}
-                className={`p-4 rounded-md border cursor-pointer transition-all duration-150 relative ${
+                className={`p-3 rounded-[8px] border-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
                   opportunityType === "job"
-                    ? "border-primary bg-primary/8 shadow-sm"
-                    : "border-border bg-secondary/15 hover:border-border/80"
+                    ? "border-white bg-transparent text-white font-bold"
+                    : "border-[#303132] bg-transparent text-[#B8B9B9] hover:border-white/50"
                 }`}
               >
-                <div className="flex items-start gap-3">
-                  <div
-                    className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${
-                      opportunityType === "job"
-                        ? "bg-primary text-primary-foreground font-semibold"
-                        : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    <Briefcase className="w-4 h-4" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-foreground">
-                        Full-Time Job Mode
-                      </span>
-                      {opportunityType === "job" && (
-                        <span className="text-[10px] px-1.5 py-0.2 bg-primary text-primary-foreground rounded font-medium">
-                          Selected
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Searches standard full-time engineering and developer postings on LinkedIn (<code className="text-[11px] bg-background px-1 py-0.5 rounded font-mono">&amp;f_JT=F</code>) and Internshala Jobs Portal.
-                    </p>
-                  </div>
-                </div>
-              </div>
+                <Briefcase className="w-4 h-4 text-[#CCF2DF]" />
+                Job Mode
+              </button>
             </div>
-          </div>
-        </section>
-
-        {/* Independent Per-Platform Safety Quotas */}
-        <section className="border border-border bg-card rounded-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Shield className="w-4 h-4 text-primary" />
-                <h2 className="text-sm font-semibold text-foreground">
-                  Independent Platform Daily Safety Quotas
-                </h2>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Set individual daily submission limits for each platform to prevent anti-bot velocity triggers.
-              </p>
-            </div>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-secondary text-muted-foreground">
-              Total: {(parseInt(linkedinDailyCap, 10) || 5) + (parseInt(internshalaDailyCap, 10) || 5)}/day
-            </span>
+            <p className="text-[11px] text-[#B8B9B9] font-light">
+              Internship mode targets student, trainee, and direct internship opportunities across all platforms.
+            </p>
           </div>
 
-          <div className="p-4 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* LinkedIn Quota */}
-              <div className="p-3.5 rounded-md border border-border bg-secondary/15 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-sky-500" />
-                    LinkedIn Daily Cap
-                  </span>
-                  <span className="text-[11px] font-mono text-muted-foreground">Default: 5/day</span>
-                </div>
-                <Input
-                  type="number"
-                  min="1"
-                  max="25"
-                  value={linkedinDailyCap}
-                  onChange={(e) => setLinkedinDailyCap(e.target.value)}
-                  className="font-mono text-[13px] h-8 rounded-md border-border bg-background"
-                />
-                <p className="text-[11px] text-muted-foreground leading-normal">
-                  Applications will stop on LinkedIn once this cap is reached, leaving Internshala untouched.
-                </p>
-              </div>
-
-              {/* Internshala Quota */}
-              <div className="p-3.5 rounded-md border border-border bg-secondary/15 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                    Internshala Daily Cap
-                  </span>
-                  <span className="text-[11px] font-mono text-muted-foreground">Default: 5/day</span>
-                </div>
-                <Input
-                  type="number"
-                  min="1"
-                  max="25"
-                  value={internshalaDailyCap}
-                  onChange={(e) => setInternshalaDailyCap(e.target.value)}
-                  className="font-mono text-[13px] h-8 rounded-md border-border bg-background"
-                />
-                <p className="text-[11px] text-muted-foreground leading-normal">
-                  Applications will stop on Internshala once this cap is reached, without restricting LinkedIn.
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Selection Probability & High-Chance Matching */}
-        <section className="border border-border bg-card rounded-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Sliders className="w-4 h-4 text-primary" />
-                <h2 className="text-sm font-semibold text-foreground">
-                  Resume Selection Fit &amp; Match Threshold
-                </h2>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Ensures AutoJob applies only to postings with high selection probability based on your resume.
-              </p>
-            </div>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-secondary text-foreground font-semibold">
-              Min Threshold: {minMatchScore}%
-            </span>
-          </div>
-
-          <div className="p-4 space-y-3">
-            <div className="space-y-1.5 max-w-sm">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="minMatchScore" className="text-xs text-muted-foreground">
-                  Minimum Selection Match Score
-                </Label>
-                <span className="text-xs font-mono font-medium text-primary">{minMatchScore}% Match</span>
-              </div>
-              <input
-                id="minMatchScore"
-                type="range"
-                min="40"
-                max="90"
-                step="5"
-                value={minMatchScore}
-                onChange={(e) => setMinMatchScore(e.target.value)}
-                className="w-full accent-primary cursor-pointer"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
-                <span>40% (Lenient)</span>
-                <span>65% (Recommended - High Selection Chance)</span>
-                <span>90% (Strict)</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground leading-relaxed pt-1">
-                Postings with match scores below <strong>{minMatchScore}%</strong> are automatically skipped. This prevents wasted applications and ensures you only apply to roles where your resume stands out.
-              </p>
-            </div>
-          </div>
-        </section>
-
-        {/* LLM Engine */}
-        <section className="border border-border bg-card rounded-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-primary" />
-                <h2 className="text-sm font-semibold text-foreground">
-                  LLM Intelligence Engine
-                </h2>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Powers resume ingestion, 150-word cover letter weaver, and automated screening answers.
-              </p>
-            </div>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-secondary text-muted-foreground">
-              Free Tier APIs
-            </span>
-          </div>
-
-          <div className="p-4 space-y-4">
-            <div className="space-y-1.5 max-w-xs">
-              <Label className="text-xs text-muted-foreground">Primary Text Model</Label>
+          {/* Workplace Type & Location */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Workplace</Label>
               <select
-                value={activeLlm}
-                onChange={(e) => setActiveLlm(e.target.value)}
-                className="w-full h-8 px-2.5 text-xs rounded-md border border-border bg-background text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-colors"
+                value={workplaceType}
+                onChange={(e) => setWorkplaceType(e.target.value as any)}
+                className="w-full h-11 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
               >
-                <option value="gemini">Google Gemini 2.5 / 3 Flash (Recommended)</option>
-                <option value="groq">Groq Cloud (Llama 3.3 70B)</option>
+                <option value="remote">Remote (Default)</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="on_site">On-site</option>
+                <option value="any">Any Workplace</option>
               </select>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="geminiApiKey" className="text-xs text-muted-foreground">
-                    Google Gemini API Key
-                  </Label>
-                  <a
-                    href="https://aistudio.google.com/app/apikey"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-primary hover:underline flex items-center gap-0.5"
-                  >
-                    Get Free Key <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                </div>
-                <Input
-                  id="geminiApiKey"
-                  type="password"
-                  value={geminiApiKey}
-                  onChange={(e) => setGeminiApiKey(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="h-8 text-[13px] font-mono rounded-md border-border bg-background"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="groqApiKey" className="text-xs text-muted-foreground">
-                    Groq Cloud API Key
-                  </Label>
-                  <a
-                    href="https://console.groq.com/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-primary hover:underline flex items-center gap-0.5"
-                  >
-                    Get Free Key <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                </div>
-                <Input
-                  id="groqApiKey"
-                  type="password"
-                  value={groqApiKey}
-                  onChange={(e) => setGroqApiKey(e.target.value)}
-                  placeholder="gsk_..."
-                  className="h-8 text-[13px] font-mono rounded-md border-border bg-background"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Target Location</Label>
+              <Input
+                value={targetLocation}
+                onChange={(e) => setTargetLocation(e.target.value)}
+                placeholder="Remote / Bengaluru / India"
+                className="text-xs sm:text-sm h-11 bg-[#141516]"
+              />
             </div>
           </div>
-        </section>
 
-        {/* Telegram Checkpoint */}
-        <section className="border border-border bg-card rounded-md overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-primary" />
-                <h2 className="text-sm font-semibold text-foreground">
-                  Telegram Human-in-the-Loop Bridge
-                </h2>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Instant screenshot dispatch and execution pause when CAPTCHA or OTP challenges appear.
-              </p>
+          {/* Apply Type */}
+          <div className="space-y-2">
+            <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Application Link Handling</Label>
+            <select
+              value={applyType}
+              onChange={(e) => setApplyType(e.target.value as any)}
+              className="w-full h-11 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
+            >
+              <option value="easy_apply_only">Easy Apply Only (Recommended)</option>
+              <option value="all">Include External Links (Bookmarks in Review Queue)</option>
+            </select>
+            <p className="text-[11px] text-[#B8B9B9] font-light">
+              Easy Apply Only submits 1-click forms directly. External links do not consume safety quotas.
+            </p>
+          </div>
+
+          {/* Match Score Threshold Slider */}
+          <div className="space-y-2 pt-2 border-t border-[#303132]">
+            <div className="flex justify-between items-center text-xs">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Min Match Score Threshold</Label>
+              <span className="font-mono text-[#CCF2DF] font-bold text-sm">{minMatchScore}%</span>
             </div>
-            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-secondary text-muted-foreground">
-              Instant Push
+            <input
+              type="range"
+              min="40"
+              max="90"
+              step="5"
+              value={minMatchScore}
+              onChange={(e) => setMinMatchScore(e.target.value)}
+              className="w-full accent-white h-1.5 bg-[#262728] rounded-none cursor-pointer"
+            />
+            <p className="text-[11px] text-[#B8B9B9] font-light">
+              Jobs scoring below this threshold are skipped to safeguard account credibility.
+            </p>
+          </div>
+        </div>
+
+        {/* SECTION 2: Platform Safety Quotas */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center gap-2.5 border-b border-[#303132] pb-3.5">
+            <Shield className="w-4 h-4 text-[#CCF2DF]" />
+            <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+              Platform Safety Caps (Anti-Ban)
+            </h2>
+          </div>
+
+          <p className="text-xs text-[#B8B9B9] font-light leading-relaxed">
+            AutoJob enforces separate daily application ceilings for each network to prevent account shadow-bans and rate limits.
+          </p>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="p-4 rounded-none border border-sky-400/30 bg-[#141516] space-y-2">
+              <Label className="text-xs font-mono uppercase tracking-wider text-sky-300">LinkedIn Daily Cap</Label>
+              <Input
+                type="number"
+                min="1"
+                max="25"
+                value={linkedinDailyCap}
+                onChange={(e) => setLinkedinDailyCap(e.target.value)}
+                className="text-xs h-10 bg-[#131415] font-mono"
+              />
+              <span className="text-[10px] text-[#B8B9B9] font-mono block">Default: 5 applications / day</span>
+            </div>
+
+            <div className="p-4 rounded-none border border-[#CCF2DF]/40 bg-[#141516] space-y-2">
+              <Label className="text-xs font-mono uppercase tracking-wider text-[#CCF2DF]">Internshala Daily Cap</Label>
+              <Input
+                type="number"
+                min="1"
+                max="25"
+                value={internshalaDailyCap}
+                onChange={(e) => setInternshalaDailyCap(e.target.value)}
+                className="text-xs h-10 bg-[#131415] font-mono"
+              />
+              <span className="text-[10px] text-[#B8B9B9] font-mono block">Default: 5 applications / day</span>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-none border border-[#303132] bg-[#141516] text-xs font-mono flex justify-between items-center">
+            <span className="text-[#B8B9B9] uppercase">Combined Daily Cap:</span>
+            <span className="font-bold text-white text-sm">
+              {(parseInt(linkedinDailyCap, 10) || 5) + (parseInt(internshalaDailyCap, 10) || 5)} submissions / day
+            </span>
+          </div>
+        </div>
+
+        {/* SECTION: Human Pacing & Operating Window */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center justify-between border-b border-[#303132] pb-3.5">
+            <div className="flex items-center gap-2.5">
+              <Radio className="w-4 h-4 text-amber-400" />
+              <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+                Operating Window & Pacing
+              </h2>
+            </div>
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border border-[#303132] bg-[#262728] text-[#B8B9B9]">
+              {ignoreTimeWindow === "true"
+                ? "Mode: 24/7 (Anytime)"
+                : `${formatHour12(parseInt(activeWindowStart, 10) || 9)} – ${formatHour12(parseInt(activeWindowEnd, 10) || 23)}`}
             </span>
           </div>
 
-          <div className="p-4 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="telegramBotToken" className="text-xs text-muted-foreground">
-                  Telegram Bot Token
-                </Label>
-                <Input
-                  id="telegramBotToken"
-                  type="password"
-                  value={telegramBotToken}
-                  onChange={(e) => setTelegramBotToken(e.target.value)}
-                  placeholder="123456789:ABCdefGhIJKlmNoPQRstuVWXyz"
-                  className="h-8 text-[13px] font-mono rounded-md border-border bg-background"
-                />
-                <span className="text-[11px] text-muted-foreground block">
-                  Created via @BotFather on Telegram
-                </span>
-              </div>
+          <p className="text-xs text-[#B8B9B9] font-light leading-relaxed">
+            Spreads submissions across your preferred active window so you don&apos;t blast all quotas in one burst. The engine applies to 1 job, rests for an organic random interval, and shuts down between runs.
+          </p>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="telegramChatId" className="text-xs text-muted-foreground">
-                  Telegram Chat ID
-                </Label>
-                <Input
-                  id="telegramChatId"
-                  value={telegramChatId}
-                  onChange={(e) => setTelegramChatId(e.target.value)}
-                  placeholder="e.g. 987654321"
-                  className="h-8 text-[13px] font-mono rounded-md border-border bg-background"
-                />
-                <span className="text-[11px] text-muted-foreground block">
-                  Obtained via @userinfobot on Telegram
-                </span>
-              </div>
-            </div>
-
-            <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center gap-3">
-              <Button
+          {/* Operating Window Enforcement Toggle */}
+          <div className="space-y-2">
+            <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Window Enforcement</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
                 type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleTestTelegram}
-                disabled={testingTelegram}
-                className="text-xs h-8 px-3 rounded-md border-border bg-card hover:bg-secondary transition-colors"
+                onClick={() => setIgnoreTimeWindow("false")}
+                className={`p-3 rounded-[8px] border-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center transition-all ${
+                  ignoreTimeWindow === "false"
+                    ? "border-white bg-transparent text-white font-bold"
+                    : "border-[#303132] bg-transparent text-[#B8B9B9] hover:border-white/50"
+                }`}
               >
-                <Send className="w-3.5 h-3.5 mr-1.5" />
-                {testingTelegram ? "Dispatching Ping..." : "Send Test Ping"}
-              </Button>
-
-              {testResult && (
-                <span
-                  className={`text-xs font-mono leading-tight max-w-xl ${
-                    testResult.startsWith("Success")
-                      ? "text-emerald-400"
-                      : "text-rose-400"
-                  }`}
-                >
-                  {testResult}
-                </span>
-              )}
+                Enforce Hours
+              </button>
+              <button
+                type="button"
+                onClick={() => setIgnoreTimeWindow("true")}
+                className={`p-3 rounded-[8px] border-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center transition-all ${
+                  ignoreTimeWindow === "true"
+                    ? "border-amber-400 bg-amber-500/10 text-amber-300 font-bold"
+                    : "border-[#303132] bg-transparent text-[#B8B9B9] hover:border-white/50"
+                }`}
+              >
+                24/7 Anytime
+              </button>
             </div>
           </div>
-        </section>
-      </form>
-    </div>
+
+          {/* Start and End Hour Inputs */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Start Hour (0–23)</Label>
+                <span className="text-[10px] font-mono text-[#CCF2DF] font-semibold">
+                  {formatHour12(parseInt(activeWindowStart, 10) || 0)}
+                </span>
+              </div>
+              <Input
+                type="number"
+                min="0"
+                max="23"
+                value={activeWindowStart}
+                onChange={(e) => setActiveWindowStart(e.target.value)}
+                className="text-xs h-10 bg-[#141516] font-mono"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs uppercase font-mono text-[#B8B9B9]">End Hour (0–24)</Label>
+                <span className="text-[10px] font-mono text-[#CCF2DF] font-semibold">
+                  {formatHour12(parseInt(activeWindowEnd, 10) || 0)}
+                </span>
+              </div>
+              <Input
+                type="number"
+                min="0"
+                max="24"
+                value={activeWindowEnd}
+                onChange={(e) => setActiveWindowEnd(e.target.value)}
+                className="text-xs h-10 bg-[#141516] font-mono"
+              />
+            </div>
+          </div>
+
+          {/* Rest Minutes */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Min Rest (Minutes)</Label>
+              <Input
+                type="number"
+                min="5"
+                max="120"
+                value={minRestMinutes}
+                onChange={(e) => setMinRestMinutes(e.target.value)}
+                className="text-xs h-10 bg-[#141516] font-mono"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Max Rest (Minutes)</Label>
+              <Input
+                type="number"
+                min="10"
+                max="240"
+                value={maxRestMinutes}
+                onChange={(e) => setMaxRestMinutes(e.target.value)}
+                className="text-xs h-10 bg-[#141516] font-mono"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* SECTION 3: LLM Providers & Models */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center gap-2.5 border-b border-[#303132] pb-3.5">
+            <Bot className="w-4 h-4 text-[#CCF2DF]" />
+            <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+              AI Intelligence & LLM Router
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Preferred AI Engine</Label>
+              <select
+                value={activeLlm}
+                onChange={(e) => setActiveLlm(e.target.value as any)}
+                className="w-full h-11 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
+              >
+                <option value="gemini">Google Gemini (Recommended)</option>
+                <option value="groq">Groq (Llama 3.3 70B)</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Gemini Model</Label>
+              <select
+                value={geminiModel}
+                onChange={(e) => setGeminiModel(e.target.value)}
+                className="w-full h-11 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
+              >
+                <option value="gemini-2.5-flash">gemini-2.5-flash (Fast & Accurate)</option>
+                <option value="gemini-2.5-pro">gemini-2.5-pro (High Quality)</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash (Legacy)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Gemini API Key */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9] flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5 text-[#CCF2DF]" /> Google Gemini API Key
+              </Label>
+              {geminiConfigured && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-[#CCF2DF] font-mono uppercase">Configured</span>
+                  <button
+                    type="button"
+                    onClick={() => clearSecret("gemini_api_key")}
+                    className="text-[10px] text-rose-400 hover:underline uppercase font-mono"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+            <Input
+              type="password"
+              value={geminiApiKey}
+              onChange={(e) => setGeminiApiKey(e.target.value)}
+              placeholder={geminiConfigured ? "Enter new key to replace..." : "AIzaSy..."}
+              className="text-xs h-10 bg-[#141516] font-mono"
+            />
+          </div>
+
+          {/* Groq API Key */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9] flex items-center gap-1.5">
+                <Key className="w-3.5 h-3.5 text-[#CCF2DF]" /> Groq API Key
+              </Label>
+              {groqConfigured && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-[#CCF2DF] font-mono uppercase">Configured</span>
+                  <button
+                    type="button"
+                    onClick={() => clearSecret("groq_api_key")}
+                    className="text-[10px] text-rose-400 hover:underline uppercase font-mono"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+            <Input
+              type="password"
+              value={groqApiKey}
+              onChange={(e) => setGroqApiKey(e.target.value)}
+              placeholder={groqConfigured ? "Enter new key to replace..." : "gsk_..."}
+              className="text-xs h-10 bg-[#141516] font-mono"
+            />
+          </div>
+        </div>
+
+        {/* SECTION: Browser Engine & Visibility */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center justify-between border-b border-[#303132] pb-3.5">
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="w-4 h-4 text-[#CCF2DF]" />
+              <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+                Browser Automation Engine
+              </h2>
+            </div>
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border border-[#CCF2DF]/40 text-[#CCF2DF]">
+              GUI: Visible
+            </span>
+          </div>
+
+          <p className="text-xs text-[#B8B9B9] font-light leading-relaxed">
+            AutoJob launches your installed desktop browser in a maximized window with full desktop visibility so you can watch job searches and applications live on screen.
+          </p>
+
+          <div className="p-4 rounded-none border border-[#303132] bg-[#141516] space-y-2.5 text-xs font-mono">
+            <div className="flex items-center justify-between">
+              <span className="text-[#B8B9B9] uppercase">Active Binary:</span>
+              <span className="font-bold text-white">
+                Google Chrome (Locked)
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[#B8B9B9] uppercase">Path:</span>
+              <span className="text-[10px] text-white/70 truncate max-w-[300px]">
+                C:\Program Files\Google\Chrome\Application\chrome.exe
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* SECTION 4: Telegram Bridge */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center gap-2.5 border-b border-[#303132] pb-3.5">
+            <MessageSquare className="w-4 h-4 text-[#CCF2DF]" />
+            <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+              Telegram Alert Bridge
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Telegram Alerts</Label>
+              <select
+                value={telegramEnabled}
+                onChange={(e) => setTelegramEnabled(e.target.value)}
+                className="w-full h-11 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
+              >
+                <option value="true">Enabled</option>
+                <option value="false">Disabled</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Chat ID</Label>
+              <Input
+                value={telegramChatId}
+                onChange={(e) => setTelegramChatId(e.target.value)}
+                placeholder="123456789"
+                className="text-xs sm:text-sm h-11 bg-[#141516] font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Bot Token</Label>
+              {telegramConfigured && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-[#CCF2DF] font-mono uppercase">Configured</span>
+                  <button
+                    type="button"
+                    onClick={() => clearSecret("telegram_bot_token")}
+                    className="text-[10px] text-rose-400 hover:underline uppercase font-mono"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+            <Input
+              type="password"
+              value={telegramBotToken}
+              onChange={(e) => setTelegramBotToken(e.target.value)}
+              placeholder={telegramConfigured ? "Enter new token to replace..." : "1234567890:ABC..."}
+              className="text-xs h-10 bg-[#141516] font-mono"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs uppercase font-mono text-[#B8B9B9]">Reverse Proxy Base URL</Label>
+            <Input
+              value={telegramApiBaseUrl}
+              onChange={(e) => setTelegramApiBaseUrl(e.target.value)}
+              placeholder="https://api.telegram.org (or custom Cloudflare proxy)"
+              className="text-xs h-10 bg-[#141516] font-mono"
+            />
+            <span className="text-[10px] text-[#B8B9B9] font-light block">
+              Bypasses Indian ISP connection resets (ECONNRESET) when configured.
+            </span>
+          </div>
+
+          <div className="pt-2 flex items-center justify-between">
+            <Button
+              type="button"
+              variant="outline"
+              size="default"
+              onClick={handleTestTelegram}
+              disabled={testingTelegram}
+              className="text-xs h-10 px-4"
+            >
+              <Send className={`w-3.5 h-3.5 mr-1.5 ${testingTelegram ? "animate-spin" : ""}`} />
+              Send Test Message
+            </Button>
+
+            {testResult && (
+              <span
+                className={`text-[11px] font-mono uppercase ${
+                  testResult.success ? "text-[#CCF2DF]" : "text-rose-400"
+                }`}
+              >
+                {testResult.message}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </form>
   );
 }

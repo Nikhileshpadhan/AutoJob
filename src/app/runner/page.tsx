@@ -1,86 +1,110 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   Play,
+  Square,
   Terminal,
-  Bot,
-  Copy,
-  Check,
-  Radio,
   Trash2,
-  Cpu,
-  Layers,
-  Sparkles,
-  ShieldAlert,
   GraduationCap,
   Briefcase,
   Target,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useTelemetry } from "@/components/telemetry-provider";
+import { useToast } from "@/components/ui/toast";
+import { formatHour12, isWithinActiveWindow } from "@/lib/automation/pacing";
 
-interface PlatformQuotaInfo {
-  applied_count: number;
-  max_cap: number;
-  remaining: number;
+interface LogMessage {
+  id?: number;
+  timestamp: string;
+  level: "info" | "warn" | "error" | "success";
+  stage?: string;
+  message: string;
 }
 
 export default function RunnerConsolePage() {
+  const { stats, startRunner, stopRunner } = useTelemetry();
+  const toast = useToast();
+
   const [platform, setPlatform] = useState<"both" | "linkedin" | "internshala">("both");
   const [opportunityType, setOpportunityType] = useState<"internship" | "job">("internship");
+  const [workplaceType, setWorkplaceType] = useState<"remote" | "hybrid" | "on_site" | "any">("remote");
+  const [applyType, setApplyType] = useState<"easy_apply_only" | "all">("easy_apply_only");
+  const [pacingMode, setPacingMode] = useState<"pacing" | "burst">("pacing");
+  const [ignoreTimeWindow, setIgnoreTimeWindow] = useState(false);
   const [dryRun, setDryRun] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
-  const [logs, setLogs] = useState<string[]>([
-    "[System] AutoJob headless worker initialized.",
-    "[Storage] Persistent browser profile mounted at ./data/browser_profile",
-    "[Scheduler] Daily quota governor active (independent platform pacing).",
-    "[Targeting] Opportunity mode configured: INTERNSHIPS (Student filter active).",
-    "[Filter] High-chance resume matching enabled - only strong matches will be submitted.",
-    "[Ready] Playwright stealth dispatcher awaiting execution trigger.",
-  ]);
-  const [quota, setQuota] = useState<{
-    applied: number;
-    max: number;
-    remaining: number;
-    platforms?: {
-      linkedin: PlatformQuotaInfo;
-      internshala: PlatformQuotaInfo;
-    };
+  const [logs, setLogs] = useState<LogMessage[]>([]);
+  const [logFilter, setLogFilter] = useState<"all" | "success" | "errors">("all");
+  const [sessionHealth, setSessionHealth] = useState<{
+    browserProfileExists: boolean;
+    hasSessionCookies: boolean;
   } | null>(null);
-  const [copiedCli, setCopiedCli] = useState(false);
+
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const isRunning = stats?.isRunning ?? false;
 
-  async function loadQuota() {
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-    try {
-      const res = await fetch("/api/automation");
-      if (res.ok) {
-        const data = await res.json();
-        setQuota({
-          applied: data.quota.applied_count,
-          max: data.quota.max_cap,
-          remaining: data.quota.remaining,
-          platforms: data.platforms || data.quota.platforms,
-        });
-      }
-
-      // Also get default opportunity_type
-      const settingsRes = await fetch("/api/settings");
-      if (settingsRes.ok) {
-        const settingsData = await settingsRes.json();
-        if (settingsData.settings?.opportunity_type) {
-          setOpportunityType(settingsData.settings.opportunity_type as "internship" | "job");
-        }
-      }
-    } catch {
-      // Ignore background refresh errors
-    }
-  }
-
+  // Initialize settings from stats
   useEffect(() => {
-    loadQuota();
-    const interval = setInterval(loadQuota, 15000);
-    return () => clearInterval(interval);
+    if (stats) {
+      if (stats.opportunityType) {
+        setOpportunityType(stats.opportunityType as "internship" | "job");
+      }
+      if (stats.workplaceType) {
+        setWorkplaceType(stats.workplaceType as any);
+      }
+      if (stats.applyType) {
+        setApplyType(stats.applyType as any);
+      }
+      if (stats.ignoreTimeWindow !== undefined) {
+        setIgnoreTimeWindow(stats.ignoreTimeWindow);
+      }
+      if (stats.pacingEnabled !== undefined) {
+        setPacingMode(stats.pacingEnabled ? "pacing" : "burst");
+      }
+    }
+  }, [stats]);
+
+  // Check browser session health
+  useEffect(() => {
+    fetch("/api/automation/session-health")
+      .then((r) => r.json())
+      .then((data) => setSessionHealth(data))
+      .catch(() => {});
+  }, []);
+
+  // Connect to real-time Server-Sent Events (SSE) telemetry stream (FE-001)
+  useEffect(() => {
+    const eventSource = new EventSource("/api/automation/stream");
+
+    eventSource.addEventListener("init", (event: MessageEvent) => {
+      try {
+        const initialLogs: LogMessage[] = JSON.parse(event.data);
+        setLogs(initialLogs);
+      } catch (err) {
+        console.warn("Failed to parse initial logs:", err);
+      }
+    });
+
+    eventSource.addEventListener("log", (event: MessageEvent) => {
+      try {
+        const newLog: LogMessage = JSON.parse(event.data);
+        setLogs((prev) => [...prev.slice(-300), newLog]);
+      } catch (err) {
+        console.warn("Failed to parse SSE log chunk:", err);
+      }
+    });
+
+    eventSource.onerror = () => {
+      // Reconnect handled automatically by EventSource
+    };
+
+    return () => {
+      eventSource.close();
+    };
   }, []);
 
   useEffect(() => {
@@ -88,376 +112,509 @@ export default function RunnerConsolePage() {
   }, [logs]);
 
   async function handleStart() {
-    setIsRunning(true);
-    addLog(
-      `[Runner] Dispatching automation run (platform: ${platform}, target: ${opportunityType.toUpperCase()}, dryRun: ${dryRun})...`
-    );
-
-    try {
-      const res = await fetch("/api/automation", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform, opportunityType, dryRun }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        addLog(`[Error] ${data.error || "Failed to start run."}`);
-      } else {
-        addLog(`[Engine] Background Playwright worker dispatched successfully.`);
-        addLog(
-          `[Targeting] Filtering exclusively for ${opportunityType.toUpperCase()} listings with high candidate selection probability...`
-        );
-      }
-    } catch {
-      addLog(`[Network Error] Could not connect to automation runner endpoint.`);
-    } finally {
-      setTimeout(() => setIsRunning(false), 2000);
-      loadQuota();
-    }
+    await startRunner({
+      platform,
+      opportunityType,
+      workplaceType,
+      applyType,
+      dryRun,
+      pacingMode,
+      ignoreTimeWindow,
+    });
   }
 
-  function addLog(msg: string) {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  async function handleStop() {
+    await stopRunner();
   }
 
-  function handleCopyCli() {
-    navigator.clipboard.writeText("npm run bot:run");
-    setCopiedCli(true);
-    setTimeout(() => setCopiedCli(false), 2000);
-  }
+  const linkedinRemaining = stats?.platforms?.linkedin?.remaining ?? 5;
+  const internshalaRemaining = stats?.platforms?.internshala?.remaining ?? 5;
+  const windowStart = stats?.activeWindowStart ?? 9;
+  const windowEnd = stats?.activeWindowEnd ?? 23;
+  const isCurrentlyInWindow = isWithinActiveWindow(new Date(), windowStart, windowEnd, ignoreTimeWindow);
 
-  const linkedinRemaining = quota?.platforms?.linkedin?.remaining ?? 5;
-  const internshalaRemaining = quota?.platforms?.internshala?.remaining ?? 5;
-  const isPlatformBlocked =
-    (platform === "linkedin" && linkedinRemaining <= 0) ||
-    (platform === "internshala" && internshalaRemaining <= 0) ||
-    (platform === "both" && linkedinRemaining <= 0 && internshalaRemaining <= 0);
+  const filteredLogs = logs.filter((l) => {
+    if (logFilter === "success") return l.level === "success";
+    if (logFilter === "errors") return l.level === "error" || l.level === "warn";
+    return true;
+  });
 
   return (
-    <div className="space-y-6 max-w-5xl animate-enter">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-            <Bot className="w-3.5 h-3.5 text-primary" />
-            <span>Process Dispatcher</span>
+    <div className="space-y-8 animate-enter">
+      {/* Header — Aronya display heading */}
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6 pb-6 border-b border-[#303132]">
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <span
+              className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border ${
+                isRunning
+                  ? stats?.isResting
+                    ? "border-amber-500/50 bg-amber-500/10 text-amber-300 animate-pulse"
+                    : "border-[#CCF2DF]/50 bg-[#CCF2DF]/10 text-[#CCF2DF] animate-pulse"
+                  : "border-[#303132] bg-[#262728] text-[#B8B9B9]"
+              }`}
+            >
+              {isRunning
+                ? stats?.isResting
+                  ? `RESTING: Next apply ${stats.nextRunAt ? new Date(stats.nextRunAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Scheduled"}`
+                  : "WORKER ACTIVE"
+                : "WORKER STANDBY"}
+            </span>
+            <span className="text-xs uppercase font-mono tracking-widest text-[#B8B9B9]">
+              EXECUTION STREAM
+            </span>
           </div>
-          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground">
-            Runner Console
+
+          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-normal tracking-[-0.03em] text-white">
+            RUNNER <span className="font-serif italic font-normal text-white">CONSOLE</span>
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Launch browser workers, monitor real-time Playwright telemetry, and track platform-specific quotas.
+          <p className="text-sm text-[#CCF2DF] font-light max-w-2xl leading-relaxed">
+            Real-time Playwright automation engine telemetry, stealth browser pacing, and live event monitoring.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono px-2.5 py-1 rounded-md bg-secondary border border-border text-foreground flex items-center gap-1.5">
-            {opportunityType === "internship" ? (
-              <GraduationCap className="w-3.5 h-3.5 text-primary" />
-            ) : (
-              <Briefcase className="w-3.5 h-3.5 text-primary" />
-            )}
-            <span className="capitalize">{opportunityType} Mode</span>
-          </span>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-card text-xs text-muted-foreground">
-            <span className="status-dot" />
-            <span>Worker: {isRunning ? "Active" : "Idle"}</span>
-          </div>
+        <div className="flex items-center gap-3">
+          {isRunning ? (
+            <Button
+              variant="destructive"
+              size="lg"
+              onClick={handleStop}
+              className="text-xs h-12 px-6"
+            >
+              <Square className="w-3.5 h-3.5 mr-2 fill-current" />
+              Stop execution
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() => {
+                  setDryRun(true);
+                  handleStart();
+                }}
+                disabled={(stats?.todayRemaining ?? 1) <= 0}
+                className="text-xs h-12 px-5"
+              >
+                <RefreshCw className="w-3.5 h-3.5 mr-2" />
+                Dry run
+              </Button>
+
+              <Button
+                size="lg"
+                onClick={() => {
+                  setDryRun(false);
+                  handleStart();
+                }}
+                disabled={(stats?.todayRemaining ?? 1) <= 0}
+                className="text-xs h-12 px-6"
+              >
+                <Play className="w-3.5 h-3.5 mr-2 fill-current" />
+                Dispatch runner
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Run Controls Panel */}
-        <div className="border border-border bg-card rounded-md p-4 space-y-4 lg:col-span-1 flex flex-col justify-between">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between pb-2.5 border-b border-border">
-              <span className="text-xs font-semibold text-foreground uppercase tracking-wider">
-                Run Configuration
+      {/* Main Grid: Controls + Live Terminal */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Column: Targeting & Controls (5 Cols) */}
+        <div className="lg:col-span-5 space-y-6">
+          {/* Dispatch Configuration Card */}
+          <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+            <div className="flex items-center justify-between border-b border-[#303132] pb-3.5">
+              <span className="text-xs font-mono uppercase tracking-widest text-white flex items-center gap-2">
+                <Target className="w-4 h-4 text-[#CCF2DF]" />
+                Targeting & Strategy
               </span>
-              <span className="text-[11px] font-mono text-muted-foreground">Local Session</span>
+              <span className="text-[10px] text-[#B8B9B9] font-mono">
+                Pacing: 10–20s jitter
+              </span>
             </div>
 
-            {/* Opportunity Target Selector (Internship vs Job) */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-foreground block">
-                Target Opportunity Type
+            {/* Opportunity Mode Toggle */}
+            <div className="space-y-2">
+              <label className="text-[11px] uppercase font-mono tracking-wider text-[#B8B9B9] block">
+                Opportunity Mode
               </label>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-md bg-secondary/30 border border-border">
+              <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={() => setOpportunityType("internship")}
-                  className={`py-1.5 px-2 rounded text-xs font-medium flex items-center justify-center gap-1.5 transition-colors ${
+                  className={`p-3 rounded-[8px] border-2 text-left transition-all ${
                     opportunityType === "internship"
-                      ? "bg-primary text-primary-foreground shadow-xs font-semibold"
-                      : "text-muted-foreground hover:text-foreground"
+                      ? "bg-transparent border-white text-white font-medium"
+                      : "bg-transparent border-[#303132] text-[#B8B9B9] hover:border-white/50"
                   }`}
                 >
-                  <GraduationCap className="w-3.5 h-3.5" />
-                  Internship
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wider font-semibold">
+                    <GraduationCap className="w-4 h-4 text-[#CCF2DF]" />
+                    Internships
+                  </div>
+                  <div className="text-[10px] text-[#CCF2DF] mt-1 font-mono uppercase tracking-wider">
+                    Internships & Trainee
+                  </div>
                 </button>
+
                 <button
                   type="button"
                   onClick={() => setOpportunityType("job")}
-                  className={`py-1.5 px-2 rounded text-xs font-medium flex items-center justify-center gap-1.5 transition-colors ${
+                  className={`p-3 rounded-[8px] border-2 text-left transition-all ${
                     opportunityType === "job"
-                      ? "bg-primary text-primary-foreground shadow-xs font-semibold"
-                      : "text-muted-foreground hover:text-foreground"
+                      ? "bg-transparent border-white text-white font-medium"
+                      : "bg-transparent border-[#303132] text-[#B8B9B9] hover:border-white/50"
                   }`}
                 >
-                  <Briefcase className="w-3.5 h-3.5" />
-                  Full-Time Job
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wider font-semibold">
+                    <Briefcase className="w-4 h-4 text-[#CCF2DF]" />
+                    Full-Time Jobs
+                  </div>
+                  <div className="text-[10px] text-[#B8B9B9] mt-1 font-mono uppercase tracking-wider">
+                    Full-time opportunities
+                  </div>
                 </button>
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                {opportunityType === "internship"
-                  ? "Student filter: applies to internships on LinkedIn and Internshala."
-                  : "Searches full-time software and engineering postings."}
-              </p>
             </div>
 
-            {/* Platform Selector */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-foreground block">
-                Platform Scope
-              </label>
-              <select
-                value={platform}
-                onChange={(e) => setPlatform(e.target.value as "both" | "linkedin" | "internshala")}
-                className="w-full h-8 px-2.5 text-xs rounded-md border border-border bg-background text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-colors"
-              >
-                <option value="both">Both (LinkedIn & Internshala - 5 each)</option>
-                <option value="linkedin">LinkedIn Only</option>
-                <option value="internshala">Internshala Only</option>
-              </select>
-            </div>
-
-            {/* Dry Run Checkbox */}
-            <div className="p-3 rounded-md border border-border bg-secondary/15 space-y-1.5">
-              <label className="flex items-center justify-between cursor-pointer">
-                <span className="text-xs font-medium text-foreground">
-                  Dry-Run Simulation
-                </span>
-                <input
-                  type="checkbox"
-                  checked={dryRun}
-                  onChange={(e) => setDryRun(e.target.checked)}
-                  className="rounded border-border text-primary focus:ring-primary h-4 w-4 bg-background"
-                />
-              </label>
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Evaluates resume selection score and drafts cover letters without submitting forms.
-              </p>
-            </div>
-
-            {/* Independent Quota Telemetry (LinkedIn & Internshala) */}
+            {/* Platform Selection */}
             <div className="space-y-2">
-              <span className="text-xs font-medium text-foreground block">
-                Daily Platform Capacity
-              </span>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                {/* LinkedIn Box */}
-                <div className="p-2.5 rounded-md border border-border bg-secondary/15 space-y-1">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-muted-foreground flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />
-                      LinkedIn
-                    </span>
-                    <span className="num font-semibold text-foreground">
-                      {quota?.platforms?.linkedin?.applied_count ?? 0} /{" "}
-                      {quota?.platforms?.linkedin?.max_cap ?? 5}
-                    </span>
+              <label className="text-[11px] uppercase font-mono tracking-wider text-[#B8B9B9] block">
+                Target Platforms
+              </label>
+              <div className="grid grid-cols-3 gap-2.5">
+                {(["both", "linkedin", "internshala"] as const).map((p) => {
+                  const isSelected = platform === p;
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setPlatform(p)}
+                      className={`py-2.5 px-3 rounded-[8px] border-2 text-center text-xs font-mono uppercase tracking-wider transition-all ${
+                        isSelected
+                          ? "bg-transparent border-white text-white font-bold"
+                          : "bg-transparent border-[#303132] text-[#B8B9B9] hover:border-white/50"
+                      }`}
+                    >
+                      {p === "both" ? "Both" : p}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Workplace Type & Apply Mode Overrides */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-[11px] uppercase font-mono tracking-wider text-[#B8B9B9] block">
+                  Workplace
+                </label>
+                <select
+                  value={workplaceType}
+                  onChange={(e) => setWorkplaceType(e.target.value as any)}
+                  className="w-full h-10 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
+                >
+                  <option value="remote">Remote (Default)</option>
+                  <option value="hybrid">Hybrid</option>
+                  <option value="on_site">On-site</option>
+                  <option value="any">Any Workplace</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[11px] uppercase font-mono tracking-wider text-[#B8B9B9] block">
+                  Apply Mode
+                </label>
+                <select
+                  value={applyType}
+                  onChange={(e) => setApplyType(e.target.value as any)}
+                  className="w-full h-10 px-3 rounded-[8px] border-2 border-[#303132] bg-[#141516] text-white text-xs font-mono focus:border-white focus:outline-none"
+                >
+                  <option value="easy_apply_only">Easy Apply Only</option>
+                  <option value="all">Include External</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Operating & Pacing Controls */}
+            <div className="space-y-3 pt-3 border-t border-[#303132]">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] uppercase font-mono tracking-wider text-[#B8B9B9] block">
+                  Operating Cadence
+                </label>
+                <span className="text-[10px] text-[#B8B9B9] font-mono">
+                  {pacingMode === "pacing" ? "9 AM–11 PM window" : "burst mode"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPacingMode("pacing")}
+                  className={`p-3 rounded-[8px] border-2 text-left transition-all ${
+                    pacingMode === "pacing"
+                      ? "bg-transparent border-white text-white font-medium"
+                      : "bg-transparent border-[#303132] text-[#B8B9B9] hover:border-white/50"
+                  }`}
+                >
+                  <div className="text-xs uppercase font-mono tracking-wider font-semibold">
+                    Smart Pacing
                   </div>
-                  <div className="w-full bg-secondary h-1 rounded-sm overflow-hidden">
-                    <div
-                      className="bg-sky-500 h-full rounded-sm"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.round(
-                            ((quota?.platforms?.linkedin?.applied_count ?? 0) /
-                              (quota?.platforms?.linkedin?.max_cap ?? 5)) *
-                              100
-                          )
-                        )}%`,
-                      }}
-                    />
+                  <div className="text-[10px] text-[#B8B9B9] mt-0.5 font-light">
+                    1 job → 20-60m rest
                   </div>
-                  <span className="text-[10px] text-muted-foreground block pt-0.5">
-                    {quota?.platforms?.linkedin?.remaining ?? 5} slots left
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPacingMode("burst")}
+                  className={`p-3 rounded-[8px] border-2 text-left transition-all ${
+                    pacingMode === "burst"
+                      ? "bg-transparent border-white text-white font-medium"
+                      : "bg-transparent border-[#303132] text-[#B8B9B9] hover:border-white/50"
+                  }`}
+                >
+                  <div className="text-xs uppercase font-mono tracking-wider font-semibold">
+                    Instant Run
+                  </div>
+                  <div className="text-[10px] text-[#B8B9B9] mt-0.5 font-light">
+                    Fast sequential
+                  </div>
+                </button>
+              </div>
+
+              {!isCurrentlyInWindow && !isRunning && (
+                <div className="p-3 rounded-none border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs flex flex-col gap-2">
+                  <div className="flex items-center gap-2 font-mono uppercase text-[11px]">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>Outside Operating Window ({formatHour12(windowStart)} – {formatHour12(windowEnd)})</span>
+                  </div>
+                  <p className="text-[11px] text-[#B8B9B9] font-light leading-relaxed">
+                    Starting now with Smart Pacing enabled will cause the worker to sleep until {formatHour12(windowStart)} tomorrow.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIgnoreTimeWindow(true)}
+                    className="self-start text-[11px] font-mono uppercase tracking-wider text-[#CCF2DF] underline hover:text-white transition-colors"
+                  >
+                    Bypass window & apply immediately →
+                  </button>
+                </div>
+              )}
+
+              <div className="pt-2 flex items-center justify-between">
+                <label htmlFor="ignoreTimeWindowCheck" className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    id="ignoreTimeWindowCheck"
+                    type="checkbox"
+                    checked={ignoreTimeWindow}
+                    onChange={(e) => setIgnoreTimeWindow(e.target.checked)}
+                    className="rounded-[4px] border-2 border-[#303132] bg-transparent text-white focus:ring-0 w-4 h-4 cursor-pointer"
+                  />
+                  <span className="text-xs text-white font-light">
+                    Run anytime 24/7 (Ignore window)
+                  </span>
+                </label>
+                <span className="text-[10px] text-[#B8B9B9] font-mono">
+                  {formatHour12(windowStart)} – {formatHour12(windowEnd)}
+                </span>
+              </div>
+            </div>
+
+            {/* Platform Quota Bars */}
+            <div className="space-y-3 pt-3 border-t border-[#303132]">
+              <div className="flex justify-between items-center text-xs font-mono uppercase tracking-wider text-[#B8B9B9]">
+                <span>Daily Platform Slots</span>
+                <span className="text-white font-medium">
+                  {stats?.todayApplied ?? 0} / {stats?.todayCap ?? 10} used
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[11px] font-mono">
+                  <span className="text-sky-400">LinkedIn</span>
+                  <span className="text-[#B8B9B9]">
+                    {linkedinRemaining} slots left
                   </span>
                 </div>
+                <div className="h-1.5 bg-[#262728] rounded-none overflow-hidden">
+                  <div
+                    className="bg-sky-400 h-full rounded-none transition-all"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (((stats?.platforms?.linkedin?.applied_count ?? 0)) /
+                            (stats?.platforms?.linkedin?.max_cap ?? 5)) *
+                            100
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
 
-                {/* Internshala Box */}
-                <div className="p-2.5 rounded-md border border-border bg-secondary/15 space-y-1">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-muted-foreground flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                      Internshala
-                    </span>
-                    <span className="num font-semibold text-foreground">
-                      {quota?.platforms?.internshala?.applied_count ?? 0} /{" "}
-                      {quota?.platforms?.internshala?.max_cap ?? 5}
-                    </span>
-                  </div>
-                  <div className="w-full bg-secondary h-1 rounded-sm overflow-hidden">
-                    <div
-                      className="bg-emerald-500 h-full rounded-sm"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.round(
-                            ((quota?.platforms?.internshala?.applied_count ?? 0) /
-                              (quota?.platforms?.internshala?.max_cap ?? 5)) *
-                              100
-                          )
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="text-[10px] text-muted-foreground block pt-0.5">
-                    {quota?.platforms?.internshala?.remaining ?? 5} slots left
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[11px] font-mono">
+                  <span className="text-[#CCF2DF]">Internshala</span>
+                  <span className="text-[#B8B9B9]">
+                    {internshalaRemaining} slots left
                   </span>
+                </div>
+                <div className="h-1.5 bg-[#262728] rounded-none overflow-hidden">
+                  <div
+                    className="bg-[#CCF2DF] h-full rounded-none transition-all"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (((stats?.platforms?.internshala?.applied_count ?? 0)) /
+                            (stats?.platforms?.internshala?.max_cap ?? 5)) *
+                            100
+                        )
+                      )}%`,
+                    }}
+                  />
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="space-y-2 pt-2">
-            <Button
-              className="w-full h-9 rounded-md bg-primary text-primary-foreground font-medium text-xs hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-primary transition-all duration-150"
-              disabled={isRunning || isPlatformBlocked}
-              onClick={handleStart}
-            >
-              <Play className="w-3.5 h-3.5 mr-2 fill-current" />
-              {isRunning ? "Starting Engine..." : `Dispatch ${opportunityType === "internship" ? "Internship" : "Job"} Runner`}
-            </Button>
+          {/* Session Health & Stealth Card */}
+          <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-4">
+            <span className="text-xs uppercase font-mono tracking-widest text-white block border-b border-[#303132] pb-3">
+              Stealth Browser Environment
+            </span>
 
-            {isPlatformBlocked && (
-              <div className="flex items-center gap-1.5 justify-center p-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px]">
-                <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                <span>Daily safety quota exhausted for selected platform</span>
-              </div>
-            )}
+            <div className="flex items-center justify-between p-3 rounded-none border border-[#303132] bg-[#141516] text-xs font-mono">
+              <span className="text-[#B8B9B9] uppercase">Browser:</span>
+              <span className="text-white font-medium">
+                {stats?.browserName || "Google Chrome"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between p-3 rounded-none border border-[#303132] bg-[#141516] text-xs font-mono">
+              <span className="text-[#B8B9B9] uppercase">Session Cookies:</span>
+              <span className="flex items-center gap-1.5">
+                {sessionHealth?.hasSessionCookies ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[#CCF2DF]" />
+                    <span className="text-[#CCF2DF]">Active</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-amber-400">Unauthenticated</span>
+                  </>
+                )}
+              </span>
+            </div>
+
+            <div className="p-3.5 rounded-none border border-[#303132] bg-[#141516] text-xs text-[#B8B9B9] font-light space-y-2">
+              <p className="text-white font-mono uppercase tracking-wider text-[11px]">
+                Visible Interactive Desktop Window
+              </p>
+              <p className="leading-relaxed">
+                Google Chrome launches maximized on your display so you can observe live DOM search iterations and form completions.
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* Live Terminal & Logs */}
-        <div className="border border-border bg-card rounded-md overflow-hidden lg:col-span-2 flex flex-col justify-between">
-          <div>
-            {/* Terminal Window Chrome */}
-            <div className="px-4 py-2.5 border-b border-border bg-secondary/30 flex items-center justify-between">
+        {/* Right Column: Real-Time Streaming Terminal (7 Cols) */}
+        <div className="lg:col-span-7 flex flex-col h-[680px] rounded-none border-2 border-[#303132] bg-[#0e0f10] overflow-hidden">
+          {/* Terminal Title Bar */}
+          <div className="h-12 px-5 bg-[#131415] border-b-2 border-[#303132] flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500/80" />
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500/80" />
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
-                </div>
-                <div className="h-3 w-px bg-border mx-1" />
-                <Terminal className="w-3.5 h-3.5 text-primary" />
-                <span className="text-xs font-mono font-medium text-foreground">
-                  playwright-stdout
-                </span>
+                <span className="w-2.5 h-2.5 rounded-full bg-white/20 inline-block" />
+                <span className="w-2.5 h-2.5 rounded-full bg-white/20 inline-block" />
+                <span className="w-2.5 h-2.5 rounded-full bg-[#CCF2DF] inline-block" />
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setLogs(["[System] Buffer cleared by user."])}
-                className="text-xs h-6 px-2 text-muted-foreground hover:text-foreground hover:bg-secondary/60"
-              >
-                <Trash2 className="w-3 h-3 mr-1" />
-                Clear
-              </Button>
+              <span className="text-xs font-mono uppercase tracking-wider text-white ml-2 flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-[#CCF2DF]" />
+                playwright-telemetry.log
+              </span>
             </div>
 
-            {/* Terminal Body */}
-            <div className="bg-[#0b0e12] text-zinc-300 font-mono text-[12px] p-4 h-[340px] overflow-y-auto terminal-scroll space-y-1.5 selection:bg-primary/25">
-              {logs.map((log, idx) => {
-                const isError = log.includes("[Error]") || log.includes("[Network Error]");
-                const isSys = log.includes("[System]") || log.includes("[Storage]");
-                const isReady =
-                  log.includes("[Ready]") || log.includes("[Engine]") || log.includes("Applied to");
-                const isTargeting =
-                  log.includes("[Targeting]") || log.includes("[Filter]") || log.includes("[Success]");
+            {/* Filter Tabs */}
+            <div className="flex items-center gap-1.5">
+              {(["all", "success", "errors"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setLogFilter(tab)}
+                  className={`text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-[4px] border transition-colors ${
+                    logFilter === tab
+                      ? "border-[#CCF2DF] bg-[#CCF2DF]/10 text-[#CCF2DF] font-bold"
+                      : "border-transparent text-[#B8B9B9] hover:text-white"
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setLogs([])}
+                className="text-[#B8B9B9] hover:text-rose-400 p-1.5 ml-1 transition-colors"
+                title="Clear screen"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Terminal Body */}
+          <div className="flex-1 p-5 overflow-y-auto font-mono text-xs leading-relaxed space-y-2 select-text">
+            {filteredLogs.length === 0 ? (
+              <div className="text-[#B8B9B9]/50 py-16 text-center font-light italic">
+                Awaiting runner execution telemetry... Click Dispatch Runner to stream live scraping and application steps.
+              </div>
+            ) : (
+              filteredLogs.map((log, index) => {
+                const isError = log.level === "error";
+                const isWarn = log.level === "warn";
+                const isSuccess = log.level === "success";
+
+                const timeStr = log.timestamp
+                  ? new Date(log.timestamp).toLocaleTimeString()
+                  : "";
+
                 return (
                   <div
-                    key={idx}
-                    className={`leading-relaxed break-words font-mono ${
+                    key={index}
+                    className={`flex items-start gap-2.5 break-all ${
                       isError
                         ? "text-rose-400"
-                        : isSys
-                        ? "text-zinc-500"
-                        : isReady
-                        ? "text-emerald-400 font-medium"
-                        : isTargeting
-                        ? "text-sky-400"
-                        : "text-zinc-300"
+                        : isWarn
+                        ? "text-amber-400"
+                        : isSuccess
+                        ? "text-[#CCF2DF]"
+                        : "text-[#E5E7EB]"
                     }`}
                   >
-                    {log}
+                    <span className="text-[#B8B9B9]/40 select-none shrink-0 font-mono text-[11px]">
+                      [{timeStr}]
+                    </span>
+                    {log.stage && (
+                      <span className="text-white/60 font-semibold shrink-0 uppercase">
+                        [{log.stage}]
+                      </span>
+                    )}
+                    <span>{log.message}</span>
                   </div>
                 );
-              })}
-              <div ref={terminalEndRef} />
-            </div>
-          </div>
-
-          <div className="px-4 py-2 border-t border-border bg-card/60 flex items-center justify-between text-[11px] text-muted-foreground">
-            <span className="font-mono">
-              Mode: {opportunityType.toUpperCase()} | Pacing: 15–45s jitter
-            </span>
-            <span className="font-mono">Buffered Events: {logs.length}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Headless CLI & Daemon Automation */}
-      <div className="border border-border bg-card rounded-md p-4 sm:p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-primary" />
-              <h2 className="text-sm font-semibold text-foreground">
-                Headless CLI &amp; Daemon Automation
-              </h2>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Run autonomously in background daemons or configure standard cron schedules.
-            </p>
-          </div>
-        </div>
-
-        <div className="relative group">
-          <pre className="p-3 rounded-md bg-background border border-border font-mono text-xs text-foreground overflow-x-auto selection:bg-primary/20">
-            npm run bot:run
-          </pre>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCopyCli}
-            className="absolute top-2 right-2 h-7 px-2.5 text-xs border-border bg-card hover:bg-secondary transition-colors"
-          >
-            {copiedCli ? (
-              <>
-                <Check className="w-3 h-3 mr-1 text-primary" />
-                Copied
-              </>
-            ) : (
-              <>
-                <Copy className="w-3 h-3 mr-1" />
-                Copy
-              </>
+              })
             )}
-          </Button>
-        </div>
+            <div ref={terminalEndRef} />
+          </div>
 
-        <div className="space-y-1 pt-1">
-          <p className="text-[11px] text-muted-foreground">
-            Production Crontab recipe (fires twice daily, capped independently by SQLite per platform):
-          </p>
-          <pre className="p-2.5 rounded-md bg-background/80 border border-border/80 font-mono text-[11px] text-muted-foreground overflow-x-auto">
-            0 9,14 * * * cd /path/to/AUTOJOB &amp;&amp; npm run bot:run &gt;&gt; /var/log/autojob.log 2&gt;&amp;1
-          </pre>
+          {/* Terminal Status Footer */}
+          <div className="h-9 px-5 bg-[#131415] border-t border-[#303132] flex items-center justify-between text-[11px] font-mono text-[#B8B9B9] shrink-0">
+            <span>Buffer: {filteredLogs.length} events</span>
+            <span className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${isRunning ? "bg-[#CCF2DF] animate-ping" : "bg-zinc-600"}`} />
+              SSE Stream Connected
+            </span>
+          </div>
         </div>
       </div>
     </div>

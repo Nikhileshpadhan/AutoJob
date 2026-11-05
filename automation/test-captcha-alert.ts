@@ -9,7 +9,7 @@ async function main() {
   await initDatabase();
 
   console.log("Triggering simulated security checkpoint alert...");
-  const alertId = await triggerHumanInTheLoopAlert({
+  const { alertId } = await triggerHumanInTheLoopAlert({
     platform: "linkedin",
     type: "captcha",
     message: "TEST ALERT: Verification puzzle triggered during Easy Apply submission.",

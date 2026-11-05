@@ -1,5 +1,4 @@
-/* AutoJob Design System v2 — dark/grotesk/lime
- * Refined: improved typography scale, better shadows, polished spacing */
+/* Aronya Design System — Dark Minimalist Creative Studio Aesthetic */
 @import url("./tokens.css");
 @import url("./base.css");
 @import "tailwindcss";
@@ -7,35 +6,35 @@
 @custom-variant dark (&:is(.dark *));
 
 :root, .dark {
-  --background: var(--color-paper);
-  --foreground: var(--color-ink);
-  --card: var(--color-paper-2);
-  --card-foreground: var(--color-ink);
-  --popover: var(--color-paper-2);
-  --popover-foreground: var(--color-ink);
-  --primary: var(--color-accent);
-  --primary-foreground: var(--color-accent-ink);
-  --secondary: var(--color-paper-3);
-  --secondary-foreground: var(--color-ink-2);
-  --muted: var(--color-paper-3);
-  --muted-foreground: var(--color-muted);
-  --accent: var(--color-paper-3);
-  --accent-foreground: var(--color-ink);
-  --destructive: var(--color-error);
-  --destructive-foreground: var(--color-destructive-fg);
-  --border: var(--color-rule);
-  --input: var(--color-rule);
-  --ring: var(--color-focus);
-  --radius: var(--radius-card);
+  --background: #141516;
+  --foreground: #FFFFFF;
+  --card: #131415;
+  --card-foreground: #FFFFFF;
+  --popover: #131415;
+  --popover-foreground: #FFFFFF;
+  --primary: #FFFFFF;
+  --primary-foreground: #141516;
+  --secondary: #262728;
+  --secondary-foreground: #CCF2DF;
+  --muted: #262728;
+  --muted-foreground: #B8B9B9;
+  --accent: #CCF2DF;
+  --accent-foreground: #141516;
+  --destructive: #f87171;
+  --destructive-foreground: #FFFFFF;
+  --border: #303132;
+  --input: #303132;
+  --ring: #333333;
+  --radius: 8px;
 
-  --sidebar: var(--color-paper);
-  --sidebar-foreground: var(--color-ink-2);
-  --sidebar-primary: var(--color-accent);
-  --sidebar-primary-foreground: var(--color-accent-ink);
-  --sidebar-accent: var(--color-paper-2);
-  --sidebar-accent-foreground: var(--color-ink);
-  --sidebar-border: var(--color-rule);
-  --sidebar-ring: var(--color-focus);
+  --sidebar: #131415;
+  --sidebar-foreground: #B8B9B9;
+  --sidebar-primary: #FFFFFF;
+  --sidebar-primary-foreground: #141516;
+  --sidebar-accent: #262728;
+  --sidebar-accent-foreground: #FFFFFF;
+  --sidebar-border: #303132;
+  --sidebar-ring: #333333;
 }
 
 @theme inline {
@@ -58,9 +57,25 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: 3px;
-  --radius-md: 6px;
+
+  --color-canvas: #141516;
+  --color-ink: #FFFFFF;
+  --color-mint: #CCF2DF;
+  --color-muted-gray: #B8B9B9;
+  --color-surface: #131415;
+  --color-surface-raised: #262728;
+  --color-brand-primary: #333333;
+
+  --font-serif: "IBM Plex Serif", Georgia, serif;
+  --font-display: "Geist", "Switzer", system-ui, -apple-system, sans-serif;
+  --font-sans: "Geist", "Switzer", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", monospace;
+
+  --radius-sm: 0px;
+  --radius-md: 8px;
   --radius-lg: 8px;
+  --radius-xs: 8px;
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -79,17 +94,38 @@
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-body);
+    letter-spacing: -0.01em;
   }
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-display);
     letter-spacing: var(--tracking-display);
+    color: var(--color-ink);
   }
   code, pre, kbd, samp {
     font-family: var(--font-mono);
   }
 }
 
-/* ── Utility classes ── */
+/* ── Aronya Studio Utility Classes ── */
+
+.font-serif-accent {
+  font-family: var(--font-serif);
+}
+
+.aronya-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-rule);
+  border-radius: 0px;
+  box-shadow: none;
+}
+
+.aronya-gradient-fade {
+  background: linear-gradient(to right, rgb(20, 21, 22) 15%, rgba(0, 0, 0, 0));
+}
+
+.aronya-gradient-fade-left {
+  background: linear-gradient(270deg, rgb(20, 21, 22) 15%, rgba(0, 0, 0, 0));
+}
 
 .num {
   font-variant-numeric: tabular-nums;
@@ -98,22 +134,23 @@
 
 .hairline-frame {
   border: 1px solid var(--color-rule);
-  background: var(--color-paper-2);
+  background: var(--color-surface);
+  border-radius: 0px;
 }
 
 .hairline-rule {
   border-color: var(--color-rule);
 }
 
-/* Skeleton loading animation */
+/* Skeleton loading animation without blur */
 @keyframes skeleton-pulse {
-  0%, 100% { opacity: 0.5; }
+  0%, 100% { opacity: 0.6; }
   50% { opacity: 0.25; }
 }
 
 .skeleton {
-  background: var(--color-paper-3);
-  border-radius: var(--radius-xs);
+  background: var(--color-surface-raised);
+  border-radius: 4px;
   animation: skeleton-pulse 1.8s var(--ease-in-out) infinite;
 }
 
@@ -138,27 +175,15 @@
 .stagger-enter > *:nth-child(5) { animation-delay: 200ms; }
 .stagger-enter > *:nth-child(6) { animation-delay: 250ms; }
 
-/* Pulse dot */
+/* Status pulse dot */
 @keyframes status-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.9); }
 }
 .status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--color-accent);
-  animation: status-pulse 2s var(--ease-in-out) infinite;
-}
-
-/* Custom scrollbar for terminal/code blocks */
-.terminal-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
-.terminal-scroll::-webkit-scrollbar-track { background: transparent; }
-.terminal-scroll::-webkit-scrollbar-thumb { background: var(--color-rule-2); border-radius: 3px; }
-.terminal-scroll::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
-
-/* Glow on accent elements */
-.accent-glow {
-  box-shadow: 0 0 12px oklch(85% 0.20 140 / 0.15),
-              0 0 4px oklch(85% 0.20 140 / 0.08);
+  background: var(--color-mint);
+  animation: status-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }

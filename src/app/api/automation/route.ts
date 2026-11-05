@@ -1,12 +1,26 @@
 import { NextResponse } from "next/server";
 import { automationEngine } from "@/lib/automation/playwright-runner";
-import { getTodayQuota } from "@/lib/db";
+import { getTodayQuota, getDb, initDatabase } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  await initDatabase();
+  const db = getDb();
   const quota = await getTodayQuota();
+  const engineStatus = automationEngine.getStatus();
+
+  // Fetch recent active or last run
+  const lastRunRes = await db.execute("SELECT * FROM automation_runs ORDER BY id DESC LIMIT 1");
+  const lastRun = lastRunRes.rows[0] || null;
+
   return NextResponse.json({
+    isRunning: engineStatus.isRunning,
+    isResting: engineStatus.isResting,
+    nextRunAt: engineStatus.nextRunAt,
+    activeRunId: engineStatus.activeRunId,
+    abortRequested: engineStatus.abortRequested,
+    lastRun,
     quota,
     isCapReached: quota.remaining <= 0,
     platforms: quota.platforms,
@@ -15,15 +29,33 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    await initDatabase();
     const body = await request.json().catch(() => ({}));
     const {
+      action,
       platform = "both",
       opportunityType,
       workplaceType,
       targetLocation,
       applyType,
       dryRun = false,
+      pacingMode,
+      ignoreTimeWindow,
     } = body;
+
+    // Handle stop action
+    if (action === "stop") {
+      await automationEngine.stop();
+      return NextResponse.json({ success: true, message: "Stop command issued to runner." });
+    }
+
+    const currentStatus = automationEngine.getStatus();
+    if (currentStatus.isRunning) {
+      return NextResponse.json(
+        { error: "Automation engine is already active and running in background." },
+        { status: 409 }
+      );
+    }
 
     const quota = await getTodayQuota();
 
@@ -58,6 +90,8 @@ export async function POST(request: Request) {
         targetLocation,
         applyType,
         dryRun,
+        pacingMode,
+        ignoreTimeWindow,
       })
       .catch((err) => {
         console.error("Background automation run error:", err);
@@ -70,10 +104,17 @@ export async function POST(request: Request) {
       opportunityType: opportunityType || "internship",
       workplaceType: workplaceType || "remote",
       targetLocation: targetLocation || "Remote",
-      applyType: applyType || "all",
+      applyType: applyType || "easy_apply_only",
+      pacingMode,
+      ignoreTimeWindow,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+export async function DELETE() {
+  automationEngine.stop();
+  return NextResponse.json({ success: true, message: "Runner abort signal delivered." });
 }

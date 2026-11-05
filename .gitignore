@@ -22,11 +22,11 @@ yarn-debug.log*
 yarn-error.log*
 clean/
 
-# Browser profiles & local database
-data/browser_profile/
-data/screenshots/
+# Browser profiles, local database & runtime secrets
+data/
 *.db
-*.db-journal
+*.db-*
+*.secret_key
 
 # Operating system files
 .DS_Store

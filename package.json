@@ -10,11 +10,13 @@
     "db:init": "node scripts/init-db.mjs",
     "bot:run": "tsx automation/runner.ts",
     "bot:test-captcha": "tsx automation/test-captcha-alert.ts",
-    "test:telegram": "node scripts/test-telegram.mjs"
+    "browser:login": "node scripts/login.mjs",
+    "test": "tsx tests/suite.ts"
   },
   "dependencies": {
     "@fontsource/geist": "^5.3.0",
     "@fontsource/geist-mono": "^5.3.0",
+    "@fontsource/ibm-plex-serif": "^5.3.0",
     "@fontsource/instrument-serif": "^5.3.0",
     "@google/genai": "^2.32.0",
     "@libsql/client": "^0.18.0",
