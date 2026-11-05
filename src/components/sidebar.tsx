@@ -10,7 +10,6 @@ import {
   SlidersHorizontal,
   Bot,
   AlertTriangle,
-  Globe,
   X,
   Menu,
 } from "lucide-react";
@@ -72,7 +71,6 @@ export function Sidebar() {
       badgeVariant: "danger",
     },
     { label: "Settings", href: "/settings", icon: SlidersHorizontal },
-    { label: "Public Landing", href: "/", icon: Globe },
   ];
 
   const sidebarContent = (
