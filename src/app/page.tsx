@@ -114,16 +114,6 @@ export default function LandingPage() {
         <div className="absolute top-0 right-0 w-1/2 h-full pointer-events-none opacity-40 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#262728] via-[#141516] to-[#141516]" />
 
         <div className="max-w-7xl mx-auto relative z-10 space-y-8 sm:space-y-10">
-          {/* Section Kicker */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="font-mono text-[10px] sm:text-[11px] uppercase tracking-[0.25em] text-[#CCF2DF] border border-[#CCF2DF]/30 bg-[#CCF2DF]/10 px-2.5 py-1">
-              [ 01 // AUTONOMOUS CAREER SYSTEM ]
-            </span>
-            <span className="hidden sm:inline font-mono text-[11px] uppercase tracking-widest text-[#B8B9B9]">
-              Google Chrome • Playwright • Gemini Flash
-            </span>
-          </div>
-
           {/* Main Giant Headline */}
           <div className="space-y-2">
             <h1 className="text-3xl sm:text-5xl md:text-7xl lg:text-[90px] font-normal tracking-[-0.035em] text-white leading-[1.08] uppercase max-w-5xl">

@@ -47,7 +47,7 @@ export function Header() {
           ) : (
             <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-[8px] bg-[#131415] border-2 border-[#CCF2DF] text-[#CCF2DF] text-xs font-mono uppercase tracking-wider">
               <span className="w-2 h-2 rounded-full bg-[#CCF2DF] animate-ping" />
-              <span>Worker: Active (Run #{stats?.activeRunId || "Active"})</span>
+              <span>Worker: Active</span>
             </div>
           )
         ) : pendingAlerts > 0 ? (
