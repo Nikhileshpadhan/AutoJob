@@ -4,6 +4,7 @@ import { deriveSearchRolesFromSkills } from "../src/lib/automation/playwright-ru
 import { evaluateSelectionProbability } from "../src/lib/llm";
 import { escapeCsvField, exportApplicationsToCSV } from "../src/lib/csv-export";
 import { encryptSecret, decryptSecret } from "../src/lib/crypto";
+import { signJwt, verifyJwt, hashPassword, verifyPassword } from "../src/lib/auth";
 import { initDatabase, getDb, getTodayPlatformQuota, incrementTodayPlatformQuota } from "../src/lib/db";
 import {
   isWithinActiveWindow,
@@ -110,12 +111,32 @@ async function runTests() {
     assert.equal(decrypted, original, "Decrypted text must match original plaintext");
   });
 
-  // TEST 7: Database Initializer and Profile Seeding (BE-001)
-  await test("initDatabase seeds profile id=1 idempotently", async () => {
+  // TEST 7: Database Initializer and Multi-User Schema
+  await test("initDatabase initializes multi-user schema idempotently", async () => {
     await initDatabase();
     const db = getDb();
-    const res = await db.execute("SELECT id, full_name FROM profile WHERE id = 1");
-    assert.equal(res.rows.length, 1, "Profile row id=1 must exist");
+    const res = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('users', 'profiles', 'runner_states')");
+    assert.ok(res.rows.length >= 2, "Core SaaS tables must exist");
+  });
+
+  // TEST 7B: Web Crypto JWT Signing & Verification
+  await test("signJwt and verifyJwt correctly sign and verify HS256 tokens", async () => {
+    const payload = { userId: "user-12345", email: "test@autojob.dev" };
+    const token = await signJwt(payload);
+    assert.ok(token && token.split(".").length === 3, "Token must be valid 3-part JWT");
+    const verified = await verifyJwt(token);
+    assert.ok(verified, "Token must verify successfully");
+    assert.equal(verified?.userId, payload.userId);
+    assert.equal(verified?.email, payload.email);
+  });
+
+  // TEST 7C: Password Hashing with Scrypt and Timing-Safe Verification
+  await test("hashPassword and verifyPassword correctly hash and verify credentials", () => {
+    const pass = "CorrectHorseBatteryStaple123!";
+    const hash = hashPassword(pass);
+    assert.ok(hash.startsWith("scrypt:"), "Hash must follow scrypt format");
+    assert.equal(verifyPassword(pass, hash), true, "Correct password must verify");
+    assert.equal(verifyPassword("WrongPassword!", hash), false, "Wrong password must be rejected");
   });
 
   // TEST 8: Atomic Per-Platform Quota Increment (BE-003, DB-002)
@@ -133,10 +154,6 @@ async function runTests() {
     await db.execute({
       sql: "UPDATE platform_daily_quota SET applied_count = ? WHERE date = ? AND platform = 'internshala'",
       args: [initialIs.applied_count, todayStr],
-    });
-    await db.execute({
-      sql: "UPDATE daily_quota SET applied_count = ? WHERE date = ?",
-      args: [initialLi.applied_count + initialIs.applied_count, todayStr],
     });
   });
 

@@ -11,9 +11,21 @@ interface LLMConfig {
   geminiModel?: string;
 }
 
-async function getLLMConfig(): Promise<LLMConfig> {
+/**
+ * Retrieves BYOK decrypted LLM credentials strictly scoped to the user.
+ * Never falls back to global .env keys to preserve multi-user isolation.
+ */
+async function getLLMConfig(userId: string): Promise<LLMConfig> {
+  if (!userId) {
+    throw new Error("User ID is required to resolve LLM configuration.");
+  }
+
   const db = getDb();
-  const settingsRows = await db.execute("SELECT key, value FROM system_settings");
+  const settingsRows = await db.execute({
+    sql: "SELECT key, value FROM user_settings WHERE user_id = ?",
+    args: [userId],
+  });
+
   const settings: Record<string, string> = {};
   for (const row of settingsRows.rows) {
     if (row.key && row.value) {
@@ -21,19 +33,26 @@ async function getLLMConfig(): Promise<LLMConfig> {
     }
   }
 
-  const rawGeminiKey = process.env.GEMINI_API_KEY || settings.gemini_api_key || "";
-  const rawGroqKey = process.env.GROQ_API_KEY || settings.groq_api_key || "";
+  const rawGeminiKey = settings.gemini_api_key || "";
+  const rawGroqKey = settings.groq_api_key || "";
 
   return {
     geminiApiKey: decryptSecret(rawGeminiKey),
     groqApiKey: decryptSecret(rawGroqKey),
-    preferredProvider: (process.env.ACTIVE_LLM_PROVIDER || settings.active_llm || "gemini") as "gemini" | "groq",
-    geminiModel: process.env.GEMINI_MODEL || settings.gemini_model || "gemini-2.5-flash",
+    preferredProvider: (settings.active_llm || "gemini") as "gemini" | "groq",
+    geminiModel: settings.gemini_model || "gemini-2.5-flash",
   };
 }
 
-export async function callLLM(prompt: string, systemInstruction?: string): Promise<string> {
-  const config = await getLLMConfig();
+/**
+ * Core LLM caller with multi-user BYOK credential isolation.
+ */
+export async function callLLM(
+  prompt: string,
+  systemInstruction?: string,
+  userId: string = "default-user"
+): Promise<string> {
+  const config = await getLLMConfig(userId);
   const provider = config.preferredProvider;
 
   // Try preferred provider first, then fallback
@@ -41,9 +60,14 @@ export async function callLLM(prompt: string, systemInstruction?: string): Promi
     try {
       return await callGroq(prompt, config.groqApiKey, systemInstruction);
     } catch (err) {
-      console.warn("Groq failed, attempting Gemini fallback:", err);
+      console.warn("Groq call failed, attempting Gemini fallback:", err);
       if (config.geminiApiKey) {
-        return await callGemini(prompt, config.geminiApiKey, systemInstruction, config.geminiModel);
+        return await callGemini(
+          prompt,
+          config.geminiApiKey,
+          systemInstruction,
+          config.geminiModel
+        );
       }
       throw err;
     }
@@ -52,9 +76,14 @@ export async function callLLM(prompt: string, systemInstruction?: string): Promi
   // Default to Gemini
   if (config.geminiApiKey) {
     try {
-      return await callGemini(prompt, config.geminiApiKey, systemInstruction, config.geminiModel);
+      return await callGemini(
+        prompt,
+        config.geminiApiKey,
+        systemInstruction,
+        config.geminiModel
+      );
     } catch (err) {
-      console.warn("Gemini failed, attempting Groq fallback:", err);
+      console.warn("Gemini call failed, attempting Groq fallback:", err);
       if (config.groqApiKey) {
         return await callGroq(prompt, config.groqApiKey, systemInstruction);
       }
@@ -66,11 +95,13 @@ export async function callLLM(prompt: string, systemInstruction?: string): Promi
     return await callGroq(prompt, config.groqApiKey, systemInstruction);
   }
 
-  throw new Error("No API key configured for Gemini or Groq. Please configure an API key in Settings or .env.");
+  throw new Error(
+    "No AI API key found for this user. Please configure your Gemini or Groq API key in Settings."
+  );
 }
 
 /**
- * Calls Google Gemini using valid production models (BE-002).
+ * Calls Google Gemini using valid production models (gemini-2.5-flash, gemini-2.0-flash).
  */
 async function callGemini(
   prompt: string,
@@ -80,13 +111,12 @@ async function callGemini(
 ): Promise<string> {
   const ai = new GoogleGenAI({ apiKey });
 
-  // Valid Google Gemini production models (BE-002)
+  // Valid Google Gemini production models
   const candidateModels = [
     preferredModel,
-    process.env.GEMINI_MODEL,
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
     "gemini-2.0-flash",
+    "gemini-2.5-pro",
   ].filter(Boolean) as string[];
 
   const models = Array.from(new Set(candidateModels));
@@ -113,107 +143,139 @@ async function callGemini(
         clearTimeout(timeoutId);
       }
     } catch (err: unknown) {
-      console.warn(`Gemini model ${model} failed, attempting next model:`, err);
       lastError = err;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (
+        errMsg.includes("404") ||
+        errMsg.includes("not found") ||
+        errMsg.includes("deprecated") ||
+        errMsg.includes("unsupported")
+      ) {
+        console.warn(`[Gemini] Model ${model} unavailable, trying next candidate...`);
+        continue;
+      }
+      throw err;
     }
   }
 
-  throw lastError;
+  throw lastError || new Error("All valid Gemini production models failed to respond.");
 }
 
-/**
- * Calls Groq with an explicit 60-second AbortController timeout (BE-002).
- */
-async function callGroq(prompt: string, apiKey: string, systemInstruction?: string): Promise<string> {
+async function callGroq(
+  prompt: string,
+  apiKey: string,
+  systemInstruction?: string
+): Promise<string> {
   const groq = new Groq({ apiKey });
-  const messages: Array<{ role: "system" | "user"; content: string }> = [];
 
+  const messages: Array<{ role: "system" | "user"; content: string }> = [];
   if (systemInstruction) {
     messages.push({ role: "system", content: systemInstruction });
   }
   messages.push({ role: "user", content: prompt });
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  const completion = await groq.chat.completions.create({
+    messages,
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.3,
+    max_tokens: 1500,
+  });
 
-  try {
-    const completion = await groq.chat.completions.create(
-      {
-        model: "llama-3.3-70b-versatile",
-        messages,
-        temperature: 0.4,
-      },
-      { signal: controller.signal }
-    );
-    return completion.choices[0]?.message?.content || "";
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  return completion.choices[0]?.message?.content || "";
 }
 
-export async function parseResumeWithLLM(rawResumeText: string): Promise<ParsedProfile> {
-  const systemPrompt = `You are an expert resume parsing engine. Extract the candidate's structured profile information strictly as valid JSON adhering to this schema:
+/**
+ * Parses resume text into structured profile data.
+ */
+export async function parseResumeWithLLM(
+  rawResumeText: string,
+  userId: string = "default-user"
+): Promise<ParsedProfile> {
+  const systemPrompt = `You are a high-precision resume parsing engine. Extract all candidate information from the provided raw resume text into valid JSON matching this schema:
 {
-  "fullName": "Full Name",
-  "email": "email address",
-  "phone": "phone number",
+  "fullName": "First Last",
+  "email": "email@example.com",
+  "phone": "+1234567890",
   "location": "City, Country",
-  "githubUrl": "github profile link or empty string",
-  "linkedinUrl": "linkedin profile link or empty string",
-  "portfolioUrl": "portfolio link or empty string",
-  "skills": ["skill1", "skill2"],
+  "githubUrl": "https://github.com/...",
+  "linkedinUrl": "https://linkedin.com/in/...",
+  "portfolioUrl": "https://...",
+  "skills": ["Skill1", "Skill2"],
   "experience": [
     {
-      "role": "Title",
       "company": "Company Name",
-      "duration": "Dates",
-      "description": "Short description"
+      "position": "Title",
+      "startDate": "Mon YYYY",
+      "endDate": "Mon YYYY or Present",
+      "highlights": ["achievement 1"]
     }
   ],
   "education": [
     {
-      "degree": "Degree Title",
-      "institution": "University / College",
-      "year": "Graduation year"
+      "institution": "University Name",
+      "degree": "B.Tech in CS",
+      "startDate": "YYYY",
+      "endDate": "YYYY"
     }
   ],
-  "summary": "2-3 sentence executive professional summary"
+  "projects": [
+    {
+      "name": "Project Name",
+      "description": "Short description",
+      "technologies": ["Tech1", "Tech2"]
+    }
+  ],
+  "targetRoles": ["Role 1", "Role 2"],
+  "summary": "2-3 sentence executive summary"
 }
-Output ONLY the raw JSON object, without backticks, markdown fences, or extra commentary.`;
+STRICT RULE: Return ONLY pure JSON without markdown backticks or extra prose.`;
 
-  const output = await callLLM(
-    `Extract structured data from the following resume text:\n\n${rawResumeText}`,
-    systemPrompt
-  );
+  const safeResume = rawResumeText.slice(0, 15000);
+  const prompt = `Parse this resume text:\n\n${safeResume}`;
+
+  const output = await callLLM(prompt, systemPrompt, userId);
 
   try {
-    let jsonString = output.trim();
-    const firstBrace = jsonString.indexOf("{");
-    const lastBrace = jsonString.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      jsonString = jsonString.slice(firstBrace, lastBrace + 1);
-    } else {
-      jsonString = jsonString.replace(/```json/gi, "").replace(/```/g, "").trim();
+    let cleaned = output.trim();
+    if (cleaned.startsWith("```json")) {
+      cleaned = cleaned.replace(/^```json/, "").replace(/```$/, "").trim();
+    } else if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/^```/, "").replace(/```$/, "").trim();
     }
-    const parsed = JSON.parse(jsonString);
+    const parsed = JSON.parse(cleaned);
     return {
-      ...parsed,
+      fullName: parsed.fullName || "",
+      email: parsed.email || "",
+      phone: parsed.phone || "",
+      location: parsed.location || "",
+      githubUrl: parsed.githubUrl || "",
+      linkedinUrl: parsed.linkedinUrl || "",
+      portfolioUrl: parsed.portfolioUrl || "",
+      skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+      experience: Array.isArray(parsed.experience) ? parsed.experience : [],
+      education: Array.isArray(parsed.education) ? parsed.education : [],
+      projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+      targetRoles: Array.isArray(parsed.targetRoles) ? parsed.targetRoles : [],
+      summary: parsed.summary || "",
       rawText: rawResumeText,
     };
   } catch (err) {
     console.error("Failed to parse LLM resume response as JSON:", output, err);
-    throw new Error(`Failed to parse structured JSON from LLM: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `Failed to parse structured JSON from LLM: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 }
 
 /**
- * Generates an ultra-tailored 120-150 word cover letter with indirect prompt injection protection (SEC-006).
+ * Generates an ultra-tailored 120-150 word cover letter with indirect prompt injection protection.
  */
 export async function generateTailoredCoverLetter(params: {
   candidateProfile: Record<string, unknown>;
   jobTitle: string;
   companyName: string;
   jobDescription: string;
+  userId?: string;
 }): Promise<string> {
   const systemPrompt = `You are an elite career strategist. Write an ultra-tailored, impactful purpose/cover letter for a job application.
 SECURITY INSTRUCTIONS:
@@ -243,17 +305,18 @@ ${safeJd}
 
 Generate the tailored 120-150 word cover letter:`;
 
-  return await callLLM(userPrompt, systemPrompt);
+  return await callLLM(userPrompt, systemPrompt, params.userId || "default-user");
 }
 
 /**
- * Answers custom screening questions with prompt injection protection and verified profile grounding (AUTO-002, SEC-006).
+ * Answers custom screening questions with prompt injection protection and verified profile grounding.
  */
 export async function answerFormQuestions(params: {
   candidateProfile: Record<string, unknown>;
   jobDescription: string;
   questions: Array<{ id: string; label: string; type?: string; options?: string[]; required?: boolean }>;
   screeningDefaults?: Record<string, string>;
+  userId?: string;
 }): Promise<Record<string, { answer: string; confidence: number }>> {
   const systemPrompt = `You are an automated job application assistant. You answer company screening questions based strictly on the candidate's verified profile and facts.
 SECURITY INSTRUCTIONS:
@@ -293,7 +356,7 @@ ${JSON.stringify(params.questions, null, 2)}
 Generate answers JSON:`;
 
   try {
-    const response = await callLLM(userPrompt, systemPrompt);
+    const response = await callLLM(userPrompt, systemPrompt, params.userId || "default-user");
     let cleaned = response.trim();
     const firstBrace = cleaned.indexOf("{");
     const lastBrace = cleaned.lastIndexOf("}");
@@ -306,8 +369,8 @@ Generate answers JSON:`;
     for (const [k, v] of Object.entries(parsed)) {
       if (typeof v === "object" && v !== null && "answer" in v) {
         result[k] = {
-          answer: String((v as any).answer || ""),
-          confidence: Number((v as any).confidence ?? 0.8),
+          answer: String((v as Record<string, unknown>).answer || ""),
+          confidence: Number((v as Record<string, unknown>).confidence ?? 0.8),
         };
       } else {
         result[k] = {
@@ -325,7 +388,7 @@ Generate answers JSON:`;
 
 export interface MatchEvaluationResult {
   isRelevant: boolean;
-  score: number; // 0 to 100
+  score: number;
   isHighChance: boolean;
   reasoning: string;
   matchedSkills: string[];
@@ -346,7 +409,6 @@ export async function evaluateSelectionProbability(params: {
 }): Promise<MatchEvaluationResult> {
   const threshold = params.minScoreThreshold ?? 65;
 
-  // AUTO-007: If candidate has no skills configured, score 0% and reject immediately!
   if (!params.candidateSkills || params.candidateSkills.length === 0) {
     return {
       isRelevant: false,
@@ -442,7 +504,6 @@ export async function evaluateSelectionProbability(params: {
     if (!clean || clean.length < 2) continue;
     let isMatch = false;
 
-    // Check full skill or sub-components if composite (e.g. "Frontend & Backend Development")
     const subParts = clean.includes("&") || clean.includes("/") || clean.includes(" and ")
       ? clean.split(/&|\/|\band\b/).map((s) => s.trim()).filter((s) => s.length >= 3)
       : [clean];
@@ -469,11 +530,9 @@ export async function evaluateSelectionProbability(params: {
     }
   }
 
-  // Calculate skill overlap ratio (up to 70 points)
   const ratio = matched.length / Math.min(params.candidateSkills.length, 6);
   let score = Math.min(70, Math.round(ratio * 70));
 
-  // Role keyword alignment bonus (up to 30 points)
   if (params.opportunityType === "internship") {
     const internTerms = ["intern", "internship", "trainee", "fresher", "junior", "apprentice", "graduate"];
     if (internTerms.some((t) => titleLower.includes(t))) {
@@ -486,7 +545,6 @@ export async function evaluateSelectionProbability(params: {
     }
   }
 
-  // Title alignment with candidate's target roles
   const targetRoles = (params.candidateProfile?.target_roles_json
     ? (typeof params.candidateProfile.target_roles_json === "string"
         ? JSON.parse(params.candidateProfile.target_roles_json)

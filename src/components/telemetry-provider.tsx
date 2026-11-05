@@ -44,6 +44,7 @@ export interface StatsData {
   };
   isRunning: boolean;
   isResting?: boolean;
+  status?: string;
   nextRunAt?: string | null;
   activeRunId: number | null;
   abortRequested: boolean;

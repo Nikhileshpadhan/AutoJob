@@ -76,6 +76,24 @@ export default function RunnerConsolePage() {
       .catch(() => {});
   }, []);
 
+  // Fetch real per-user runner logs directly from /api/automation (runner_logs table)
+  useEffect(() => {
+    function loadLogs() {
+      fetch("/api/automation")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.logs && Array.isArray(data.logs)) {
+            setLogs(data.logs);
+          }
+        })
+        .catch(() => {});
+    }
+
+    loadLogs();
+    const interval = setInterval(loadLogs, 3500);
+    return () => clearInterval(interval);
+  }, []);
+
   // Connect to real-time Server-Sent Events (SSE) telemetry stream (FE-001)
   useEffect(() => {
     const eventSource = new EventSource("/api/automation/stream");
@@ -148,15 +166,23 @@ export default function RunnerConsolePage() {
             <span
               className={`text-[10px] font-mono uppercase tracking-widest px-2.5 py-1 border ${
                 isRunning
-                  ? stats?.isResting
+                  ? stats?.status === "resting" || stats?.isResting
                     ? "border-amber-500/50 bg-amber-500/10 text-amber-300 animate-pulse"
+                    : stats?.status === "quota_reached_sleeping"
+                    ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                    : stats?.status === "waiting_for_window"
+                    ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
                     : "border-[#CCF2DF]/50 bg-[#CCF2DF]/10 text-[#CCF2DF] animate-pulse"
                   : "border-[#303132] bg-[#262728] text-[#B8B9B9]"
               }`}
             >
               {isRunning
-                ? stats?.isResting
+                ? stats?.status === "resting" || stats?.isResting
                   ? `RESTING: Next apply ${stats.nextRunAt ? new Date(stats.nextRunAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Scheduled"}`
+                  : stats?.status === "quota_reached_sleeping"
+                  ? "QUOTA COMPLETE: RESUMES 9 AM"
+                  : stats?.status === "waiting_for_window"
+                  ? "WAITING FOR 9 AM WINDOW"
                   : "WORKER ACTIVE"
                 : "WORKER STANDBY"}
             </span>

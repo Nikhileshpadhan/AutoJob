@@ -57,6 +57,12 @@ export default function SettingsPage() {
   const [telegramApiBaseUrl, setTelegramApiBaseUrl] = useState("");
   const [telegramConfigured, setTelegramConfigured] = useState(false);
 
+  // Cloud Platform Session Cookies (BYOK Auth)
+  const [linkedinLiAtCookie, setLinkedinLiAtCookie] = useState("");
+  const [internshalaSessionCookie, setInternshalaSessionCookie] = useState("");
+  const [linkedinCookieConfigured, setLinkedinCookieConfigured] = useState(false);
+  const [internshalaCookieConfigured, setInternshalaCookieConfigured] = useState(false);
+
   const [saving, setSaving] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -91,6 +97,8 @@ export default function SettingsPage() {
           setTelegramChatId(s.telegram_chat_id || "");
           setTelegramApiBaseUrl(s.telegram_api_base_url || "");
           setTelegramConfigured(Boolean(s.telegram_bot_token_configured));
+          setLinkedinCookieConfigured(Boolean(s.linkedin_cookie_configured));
+          setInternshalaCookieConfigured(Boolean(s.internshala_cookie_configured));
         }
       }
     } catch (err) {
@@ -139,6 +147,12 @@ export default function SettingsPage() {
     if (telegramBotToken.trim()) {
       payload.telegram_bot_token = telegramBotToken.trim();
     }
+    if (linkedinLiAtCookie.trim()) {
+      payload.linkedin_li_at_cookie = linkedinLiAtCookie.trim();
+    }
+    if (internshalaSessionCookie.trim()) {
+      payload.internshala_session_cookie = internshalaSessionCookie.trim();
+    }
 
     try {
       const res = await fetch("/api/settings", {
@@ -165,7 +179,14 @@ export default function SettingsPage() {
     }
   }
 
-  async function clearSecret(key: "gemini_api_key" | "groq_api_key" | "telegram_bot_token") {
+  async function clearSecret(
+    key:
+      | "gemini_api_key"
+      | "groq_api_key"
+      | "telegram_bot_token"
+      | "linkedin_li_at_cookie"
+      | "internshala_session_cookie"
+  ) {
     if (!confirm(`Are you sure you want to clear the configured ${key.replace(/_/g, " ")}?`)) return;
     try {
       const res = await fetch("/api/settings", {
@@ -631,6 +652,88 @@ export default function SettingsPage() {
               <span className="text-[10px] text-white/70 truncate max-w-[300px]">
                 C:\Program Files\Google\Chrome\Application\chrome.exe
               </span>
+            </div>
+          </div>
+        </div>
+
+        {/* SECTION: Cloud Platform Session Cookies */}
+        <div className="p-6 rounded-none border border-[#303132] bg-[#131415] space-y-5">
+          <div className="flex items-center justify-between border-b border-[#303132] pb-3.5">
+            <div className="flex items-center gap-2.5">
+              <Shield className="w-4 h-4 text-[#CCF2DF]" />
+              <h2 className="text-xs uppercase font-mono tracking-widest text-white">
+                Cloud Platform Session Cookies (BYOK Authentication)
+              </h2>
+            </div>
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border border-[#CCF2DF]/40 text-[#CCF2DF]">
+              Encrypted at Rest
+            </span>
+          </div>
+
+          <div className="p-4 rounded-[8px] bg-[#262728]/40 border border-[#303132] space-y-2 text-xs">
+            <span className="font-mono text-[#CCF2DF] uppercase tracking-wider text-[11px] block font-semibold">
+              How to copy your session cookies (3-Step Guide):
+            </span>
+            <ol className="list-decimal list-inside space-y-1 text-[#B8B9B9] font-light">
+              <li>Open LinkedIn or Internshala in your desktop browser and sign in.</li>
+              <li>Press <kbd className="px-1.5 py-0.5 rounded bg-[#141516] border border-[#303132] font-mono text-[10px] text-white">F12</kbd> (or right click -&gt; Inspect) &gt; Navigate to the <strong className="text-white">Application</strong> tab &gt; Expand <strong className="text-white">Cookies</strong> in the left sidebar.</li>
+              <li>Find the <code className="text-[#CCF2DF]">li_at</code> cookie for LinkedIn or <code className="text-[#CCF2DF]">PHPSESSID</code> for Internshala, copy its value, and paste it into the respective input below.</li>
+            </ol>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs uppercase font-mono text-[#B8B9B9] flex items-center gap-2">
+                  <Key className="w-3.5 h-3.5 text-[#CCF2DF]" /> LinkedIn Session Cookie (li_at)
+                </Label>
+                {linkedinCookieConfigured && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-[#CCF2DF] font-mono uppercase">Configured</span>
+                    <button
+                      type="button"
+                      onClick={() => clearSecret("linkedin_li_at_cookie")}
+                      className="text-[10px] text-rose-400 hover:underline uppercase font-mono"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
+              <Input
+                type="password"
+                value={linkedinLiAtCookie}
+                onChange={(e) => setLinkedinLiAtCookie(e.target.value)}
+                placeholder={linkedinCookieConfigured ? "Enter new li_at cookie to replace..." : "AQEDAT..."}
+                className="text-xs h-10 bg-[#141516] font-mono"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <Label className="text-xs uppercase font-mono text-[#B8B9B9] flex items-center gap-2">
+                  <Key className="w-3.5 h-3.5 text-[#CCF2DF]" /> Internshala Session Cookie (PHPSESSID)
+                </Label>
+                {internshalaCookieConfigured && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-[#CCF2DF] font-mono uppercase">Configured</span>
+                    <button
+                      type="button"
+                      onClick={() => clearSecret("internshala_session_cookie")}
+                      className="text-[10px] text-rose-400 hover:underline uppercase font-mono"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
+              <Input
+                type="password"
+                value={internshalaSessionCookie}
+                onChange={(e) => setInternshalaSessionCookie(e.target.value)}
+                placeholder={internshalaCookieConfigured ? "Enter new PHPSESSID cookie to replace..." : "abc123xyz..."}
+                className="text-xs h-10 bg-[#141516] font-mono"
+              />
             </div>
           </div>
         </div>

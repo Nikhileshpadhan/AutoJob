@@ -1,0 +1,46 @@
+name: AutoJob Autonomous Cloud Worker
+
+on:
+  # Manual or API-triggered execution (e.g. when user clicks Start Runner on Vercel)
+  workflow_dispatch:
+
+  # Scheduled execution: Runs every 20 minutes during 9:00 AM – 11:00 PM IST (03:30 – 17:30 UTC)
+  schedule:
+    - cron: "*/20 3-17 * * *"
+
+concurrency:
+  group: autojob-worker
+  cancel-in-progress: false
+
+jobs:
+  run-worker:
+    name: Execute AutoJob Paced Applications
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install NPM Dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium with OS Dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Execute Cloud Automation Tick
+        run: npx tsx automation/runner.ts --cloud-tick
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_AUTH_TOKEN: ${{ secrets.DATABASE_AUTH_TOKEN }}
+          ENCRYPTION_SECRET: ${{ secrets.ENCRYPTION_SECRET }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          HEADLESS_BROWSER: "true"
+          CHROMIUM_NO_SANDBOX: "true"
+

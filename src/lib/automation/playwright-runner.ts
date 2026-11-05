@@ -1,6 +1,7 @@
 import { chromium, type BrowserContext, type Page } from "playwright";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import { execSync } from "node:child_process";
 import {
   getDb,
@@ -8,7 +9,14 @@ import {
   getTodayPlatformQuota,
   incrementTodayPlatformQuota,
   initDatabase,
+  ensureDbInitialized,
+  getUserSettings,
+  getRunnerState,
+  updateRunnerState,
+  addRunnerLog,
+  type RunnerState,
 } from "../db";
+import { decryptSecret } from "../crypto";
 import {
   getStealthChromiumArgs,
   resolveBrowserExecutablePath,
@@ -166,8 +174,324 @@ export class AutomationEngine {
   private abortRequested: boolean = false;
   private activeRunId: number | null = null;
 
+  private userDaemonAborts: Map<string, () => void> = new Map();
+
   public getStatus() {
     return getRunnerStatus();
+  }
+
+  public async stopUserDaemon(userId: string): Promise<void> {
+    const abortFn = this.userDaemonAborts.get(userId);
+    if (abortFn) {
+      abortFn();
+      this.userDaemonAborts.delete(userId);
+    }
+  }
+
+  public async startUserDaemon(userId: string): Promise<void> {
+    if (this.userDaemonAborts.has(userId)) return;
+
+    let aborted = false;
+    this.userDaemonAborts.set(userId, () => {
+      aborted = true;
+    });
+
+    (async () => {
+      while (!aborted) {
+        const state = await getRunnerState(userId);
+        if (!state.isEnabled || aborted) break;
+
+        try {
+          await this.runUserTick(userId);
+        } catch (err) {
+          console.error(`[User Daemon ${userId}] Tick error:`, err);
+        }
+
+        const updatedState = await getRunnerState(userId);
+        if (!updatedState.isEnabled || aborted) break;
+
+        let sleepMs = 30000;
+        if (updatedState.nextRunAt) {
+          const diff = new Date(updatedState.nextRunAt).getTime() - Date.now();
+          if (diff > 0) {
+            sleepMs = Math.min(diff, 60000);
+          }
+        }
+
+        await interruptibleSleep(sleepMs, () => aborted || !state.isEnabled, 1000);
+      }
+      this.userDaemonAborts.delete(userId);
+    })().catch((err) => {
+      console.error(`[User Daemon ${userId}] Exited with error:`, err);
+      this.userDaemonAborts.delete(userId);
+    });
+  }
+
+  public async runUserTick(userId: string): Promise<{
+    status: string;
+    nextRunAt?: string | null;
+    applied?: boolean;
+    message?: string;
+  }> {
+    await ensureDbInitialized();
+    const runnerState = await getRunnerState(userId);
+    if (!runnerState.isEnabled) {
+      return { status: "stopped", message: "Runner is stopped" };
+    }
+
+    const settings = await getUserSettings(userId);
+    const windowStart = parseInt(settings.active_window_start || "9", 10);
+    const windowEnd = parseInt(settings.active_window_end || "23", 10);
+    const ignoreTimeWindow = settings.ignore_time_window === "true";
+    const minRestMin = parseInt(settings.min_rest_minutes || "20", 10);
+    const maxRestMin = parseInt(settings.max_rest_minutes || "60", 10);
+    const platform = runnerState.platform || "both";
+    const opportunityType = runnerState.opportunityType || "internship";
+    const dryRun = runnerState.dryRun;
+
+    const now = new Date();
+
+    // 1. Operating Window Check (9 AM - 11 PM)
+    if (!isWithinActiveWindow(now, windowStart, windowEnd, ignoreTimeWindow)) {
+      const { nextOpenTime } = getMsUntilNextWindowOpen(now, windowStart, windowEnd);
+      const nextRunAt = nextOpenTime.toISOString();
+      await updateRunnerState(userId, {
+        status: "waiting_for_window",
+        nextRunAt,
+      });
+      const timeStr = nextOpenTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      await addRunnerLog(
+        userId,
+        `[Pacing] Outside ${formatHour12(windowStart)} – ${formatHour12(windowEnd)} window. Next application scheduled for ${timeStr}.`,
+        "info"
+      );
+      return { status: "waiting_for_window", nextRunAt };
+    }
+
+    // 2. Daily Quota Check
+    const quota = await getTodayQuota(userId);
+    let platformHasRemaining = false;
+    if (platform === "both") {
+      platformHasRemaining = quota.remaining > 0;
+    } else {
+      platformHasRemaining = (quota.platforms[platform]?.remaining ?? 0) > 0;
+    }
+
+    if (!platformHasRemaining) {
+      const { nextOpenTime } = getMsUntilNextWindowOpen(now, windowStart, windowEnd);
+      const nextRunAt = nextOpenTime.toISOString();
+      await updateRunnerState(userId, {
+        status: "quota_reached_sleeping",
+        nextRunAt,
+      });
+      const timeStr = nextOpenTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      await addRunnerLog(
+        userId,
+        `[Quota] Today's daily cap reached! Automatically sleeping until tomorrow ${timeStr}...`,
+        "info"
+      );
+      return { status: "quota_reached_sleeping", nextRunAt };
+    }
+
+    // 3. Resting check
+    if (runnerState.nextRunAt && now.getTime() < new Date(runnerState.nextRunAt).getTime()) {
+      return { status: "resting", nextRunAt: runnerState.nextRunAt };
+    }
+
+    // 4. Mark status running
+    await updateRunnerState(userId, {
+      status: "running",
+      lastRunAt: now.toISOString(),
+    });
+    await addRunnerLog(
+      userId,
+      `[Worker] Starting application tick for ${platform.toUpperCase()} (${opportunityType.toUpperCase()})...`,
+      "info"
+    );
+
+    const db = getDb();
+    const profRes = await db.execute({
+      sql: "SELECT * FROM profiles WHERE user_id = ?",
+      args: [userId],
+    });
+    const profile = (profRes.rows[0] as Record<string, unknown>) || {};
+    const candidateSkills: string[] = profile.skills_json
+      ? JSON.parse(String(profile.skills_json))
+      : [];
+    const targetRoles: string[] = profile.target_roles_json
+      ? JSON.parse(String(profile.target_roles_json))
+      : ["Software Engineer", "Full Stack Developer", "Frontend Developer", "Backend Developer"];
+
+    if (candidateSkills.length === 0) {
+      await addRunnerLog(
+        userId,
+        "[Error] Candidate profile has zero configured skills. Please add skills or upload a resume before running.",
+        "error"
+      );
+      await updateRunnerState(userId, { status: "stopped", isEnabled: false });
+      return { status: "error", message: "Skills missing" };
+    }
+
+    // Materialize resume PDF if base64 exists
+    let resumePath = "";
+    if (profile.resume_pdf_base64) {
+      try {
+        const tmpPath = path.join(os.tmpdir(), `resume-${userId}.pdf`);
+        const cleanBase64 = String(profile.resume_pdf_base64).replace(/^data:application\/pdf;base64,/, "");
+        fs.writeFileSync(tmpPath, Buffer.from(cleanBase64, "base64"));
+        resumePath = tmpPath;
+      } catch (fErr) {
+        console.warn("[Worker] Could not materialize resume PDF to temp dir:", fErr);
+      }
+    }
+
+    const liAtCookie = decryptSecret(String(settings.linkedin_li_at_cookie || ""));
+    const phpSessCookie = decryptSecret(String(settings.internshala_session_cookie || ""));
+
+    let appliedSuccess = false;
+    let browser = null;
+
+    try {
+      const headless = process.env.HEADLESS_BROWSER !== "false";
+      const browserExecutable = resolveBrowserExecutablePath();
+
+      browser = await chromium.launch({
+        headless,
+        executablePath: browserExecutable.path || undefined,
+        args: getStealthChromiumArgs(),
+      });
+
+      const context = await browser.newContext({
+        viewport: { width: 1440, height: 900 },
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      });
+
+      const cookiesToInject = [];
+      if (liAtCookie) {
+        cookiesToInject.push({
+          name: "li_at",
+          value: liAtCookie,
+          domain: ".linkedin.com",
+          path: "/",
+          httpOnly: true,
+          secure: true,
+        });
+      }
+      if (phpSessCookie) {
+        cookiesToInject.push({
+          name: "PHPSESSID",
+          value: phpSessCookie,
+          domain: ".internshala.com",
+          path: "/",
+        });
+      }
+      if (cookiesToInject.length > 0) {
+        await context.addCookies(cookiesToInject);
+      }
+
+      const page = await context.newPage();
+
+      const searchRoles = deriveSearchRolesFromSkills(candidateSkills, targetRoles, opportunityType);
+      const targetPlatforms =
+        platform === "both"
+          ? quota.platforms.internshala.remaining > 0
+            ? ["internshala", "linkedin"]
+            : ["linkedin"]
+          : [platform];
+
+      for (const p of targetPlatforms) {
+        if (p === "internshala" && quota.platforms.internshala.remaining > 0) {
+          const count = await this.processInternshala(
+            page,
+            profile,
+            candidateSkills,
+            searchRoles,
+            opportunityType,
+            "remote",
+            "Remote",
+            65,
+            dryRun,
+            1,
+            userId,
+            resumePath
+          );
+          if (count > 0) {
+            appliedSuccess = true;
+            break;
+          }
+        } else if (p === "linkedin" && quota.platforms.linkedin.remaining > 0) {
+          const count = await this.processLinkedIn(
+            page,
+            profile,
+            candidateSkills,
+            searchRoles,
+            opportunityType,
+            "remote",
+            "Remote",
+            "easy_apply_only",
+            65,
+            dryRun,
+            1,
+            userId,
+            resumePath
+          );
+          if (count > 0) {
+            appliedSuccess = true;
+            break;
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Worker error for ${userId}]:`, err);
+      await addRunnerLog(
+        userId,
+        `[Error] Application run encountered an issue: ${err?.message || String(err)}`,
+        "error"
+      );
+    } finally {
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
+    }
+
+    const restMinutes = Math.floor(Math.random() * (maxRestMin - minRestMin + 1)) + minRestMin;
+    const restMs = restMinutes * 60 * 1000;
+    const nextRunTime = new Date(Date.now() + restMs);
+
+    let finalStatus: RunnerState["status"] = "resting";
+    let finalNextRunAt = nextRunTime.toISOString();
+
+    if (!isWithinActiveWindow(nextRunTime, windowStart, windowEnd, ignoreTimeWindow)) {
+      const { nextOpenTime } = getMsUntilNextWindowOpen(nextRunTime, windowStart, windowEnd);
+      finalStatus = "waiting_for_window";
+      finalNextRunAt = nextOpenTime.toISOString();
+      const openStr = nextOpenTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      await addRunnerLog(
+        userId,
+        `[Pacing] Window closes soon. Next application scheduled for tomorrow at ${openStr}.`,
+        "info"
+      );
+    } else {
+      const runStr = nextRunTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      await addRunnerLog(
+        userId,
+        `[Pacing] Rest interval: ${restMinutes}m. Next application scheduled for ${runStr}.`,
+        "info"
+      );
+    }
+
+    await updateRunnerState(userId, {
+      status: finalStatus,
+      nextRunAt: finalNextRunAt,
+      lastRunAt: new Date().toISOString(),
+    });
+
+    return {
+      status: finalStatus,
+      nextRunAt: finalNextRunAt,
+      applied: appliedSuccess,
+    };
   }
 
   private updateStatus(patch: {
@@ -863,7 +1187,9 @@ export class AutomationEngine {
     applyType: "all" | "easy_apply_only" = "easy_apply_only",
     minScoreThreshold: number = 65,
     dryRun: boolean = false,
-    maxSubmissions: number = 1
+    maxSubmissions: number = 1,
+    userId: string = "default-user",
+    resumeFilePath?: string
   ): Promise<number> {
     await logTelemetry({
       runId: this.activeRunId || undefined,
@@ -1067,10 +1393,11 @@ export class AutomationEngine {
           // 1. Check if already applied or logged in DB FIRST (AUTO-006)
           const existing = await db.execute({
             sql: `SELECT id FROM applications 
-                  WHERE (external_job_id = ? AND external_job_id IS NOT NULL) 
+                  WHERE (user_id = ? OR user_id = 'default-user')
+                    AND ((external_job_id = ? AND external_job_id IS NOT NULL) 
                      OR (job_url = ?) 
-                     OR (company = ? AND position = ?)`,
-            args: [canonicalJobId, canonicalJobUrl, company, position],
+                     OR (company = ? AND position = ?))`,
+            args: [userId, canonicalJobId, canonicalJobUrl, company, position],
           });
 
           if (existing.rows.length > 0) {
@@ -1164,11 +1491,12 @@ export class AutomationEngine {
             // AUTO-003 FIX: DO NOT INCREMENT platform quota on external_ready!
             await db.execute({
               sql: `INSERT INTO applications (
-                      platform, company, position, job_url, external_job_id, status,
+                      user_id, platform, company, position, job_url, external_job_id, status,
                       match_score, matched_skills_json, missing_skills_json, match_reasoning,
                       tailored_letter, notes
-                    ) VALUES ('linkedin', ?, ?, ?, ?, 'external_ready', ?, ?, ?, ?, ?, 'Direct Apply Ready - Tailored cover letter prepared')`,
+                    ) VALUES (?, 'linkedin', ?, ?, ?, ?, 'external_ready', ?, ?, ?, ?, ?, 'Direct Apply Ready - Tailored cover letter prepared')`,
               args: [
+                userId,
                 company,
                 position,
                 directApplyUrl,
@@ -1226,11 +1554,12 @@ export class AutomationEngine {
             });
             await db.execute({
               sql: `INSERT INTO applications (
-                      platform, company, position, job_url, external_job_id, status,
+                      user_id, platform, company, position, job_url, external_job_id, status,
                       match_score, matched_skills_json, missing_skills_json, match_reasoning,
                       tailored_letter, notes
-                    ) VALUES ('linkedin', ?, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, 'Dry run simulated')`,
+                    ) VALUES (?, 'linkedin', ?, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, 'Dry run simulated')`,
               args: [
+                userId,
                 company,
                 position,
                 canonicalJobUrl,
@@ -1460,11 +1789,12 @@ export class AutomationEngine {
             // Verified submission (AUTO-004)
             await db.execute({
               sql: `INSERT INTO applications (
-                      platform, company, position, job_url, external_job_id, status,
+                      user_id, platform, company, position, job_url, external_job_id, status,
                       match_score, matched_skills_json, missing_skills_json, match_reasoning,
                       tailored_letter, notes
-                    ) VALUES ('linkedin', ?, ?, ?, ?, 'applied', ?, ?, ?, ?, ?, 'Easy Apply submitted & verified')`,
+                    ) VALUES (?, 'linkedin', ?, ?, ?, ?, 'applied', ?, ?, ?, ?, ?, 'Easy Apply submitted & verified')`,
               args: [
+                userId,
                 company,
                 position,
                 canonicalJobUrl,
@@ -1477,7 +1807,7 @@ export class AutomationEngine {
               ],
             });
 
-            await incrementTodayPlatformQuota("linkedin");
+            await incrementTodayPlatformQuota(userId, "linkedin");
             appliedCount++;
 
             await logTelemetry({
@@ -1523,7 +1853,9 @@ export class AutomationEngine {
     targetLocation: string = "Remote",
     minScoreThreshold: number = 65,
     dryRun: boolean = false,
-    maxSubmissions: number = 1
+    maxSubmissions: number = 1,
+    userId: string = "default-user",
+    resumeFilePath?: string
   ): Promise<number> {
     const isRemote = workplaceType === "remote" || targetLocation.toLowerCase() === "remote";
     const baseEntryUrl =
@@ -1673,10 +2005,11 @@ export class AutomationEngine {
           // 1. Check DB duplicate FIRST (AUTO-006)
           const existing = await db.execute({
             sql: `SELECT id FROM applications 
-                  WHERE (external_job_id = ? AND external_job_id IS NOT NULL) 
+                  WHERE (user_id = ? OR user_id = 'default-user')
+                    AND ((external_job_id = ? AND external_job_id IS NOT NULL) 
                      OR (job_url = ?) 
-                     OR (company = ? AND position = ?)`,
-            args: [canonicalJobId, detailUrl, company, position],
+                     OR (company = ? AND position = ?))`,
+            args: [userId, canonicalJobId, detailUrl, company, position],
           });
           if (existing.rows.length > 0) {
             await logTelemetry({
@@ -1768,11 +2101,12 @@ export class AutomationEngine {
             });
             await db.execute({
               sql: `INSERT INTO applications (
-                      platform, company, position, job_url, external_job_id, status,
+                      user_id, platform, company, position, job_url, external_job_id, status,
                       match_score, matched_skills_json, missing_skills_json, match_reasoning,
                       tailored_letter, notes
-                    ) VALUES ('internshala', ?, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, 'Dry run simulated')`,
+                    ) VALUES (?, 'internshala', ?, ?, ?, ?, 'skipped', ?, ?, ?, ?, ?, 'Dry run simulated')`,
               args: [
+                userId,
                 company,
                 position,
                 detailUrl,
@@ -1910,11 +2244,12 @@ export class AutomationEngine {
           // Verified submission
           await db.execute({
             sql: `INSERT INTO applications (
-                    platform, company, position, job_url, external_job_id, status,
+                    user_id, platform, company, position, job_url, external_job_id, status,
                     match_score, matched_skills_json, missing_skills_json, match_reasoning,
                     tailored_letter, notes
-                  ) VALUES ('internshala', ?, ?, ?, ?, 'applied', ?, ?, ?, ?, ?, 'Application submitted & verified')`,
+                  ) VALUES (?, 'internshala', ?, ?, ?, ?, 'applied', ?, ?, ?, ?, ?, 'Application submitted & verified')`,
             args: [
+              userId,
               company,
               position,
               detailUrl,
@@ -1927,7 +2262,7 @@ export class AutomationEngine {
             ],
           });
 
-          await incrementTodayPlatformQuota("internshala");
+          await incrementTodayPlatformQuota(userId, "internshala");
           appliedCount++;
 
           await logTelemetry({

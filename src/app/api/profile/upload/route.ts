@@ -1,18 +1,19 @@
 import { NextResponse } from "next/server";
-import { getDb, initDatabase } from "@/lib/db";
+import { getDb, ensureDbInitialized } from "@/lib/db";
+import { requireAuth, AuthError } from "@/lib/auth";
 import { extractTextFromPdf } from "@/lib/llm/pdf-parser";
 import { parseResumeWithLLM } from "@/lib/llm";
-import path from "node:path";
-import fs from "node:fs";
 
 export const dynamic = "force-dynamic";
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB (SEC-004)
-const MAX_RAW_TEXT_LENGTH = 15000; // Cap LLM token payload (SEC-004)
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+const MAX_RAW_TEXT_LENGTH = 15000;
 
 export async function POST(request: Request) {
   try {
-    await initDatabase();
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
+
     const formData = await request.formData();
     const file = formData.get("resume") as File | null;
 
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Validate %PDF- magic bytes header (SEC-004)
+    // Validate %PDF- magic bytes header
     if (buffer.length < 5 || buffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
       return NextResponse.json(
         { error: "Uploaded file is not a valid PDF document (missing %PDF- header)." },
@@ -38,16 +39,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // Persist uploaded PDF into ./data/resumes/ for automated Playwright uploads
-    const resumesDir = path.join(process.cwd(), "data", "resumes");
-    if (!fs.existsSync(resumesDir)) {
-      fs.mkdirSync(resumesDir, { recursive: true });
-    }
-
-    const sanitizedBase = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
-    const resumeFileName = `resume_${Date.now()}_${sanitizedBase}`;
-    const resumeFilePath = path.join(resumesDir, resumeFileName);
-    fs.writeFileSync(resumeFilePath, buffer);
+    const resumePdfBase64 = buffer.toString("base64");
+    const resumeFilename = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
 
     // Extract text from PDF
     const rawText = await extractTextFromPdf(buffer);
@@ -58,24 +51,27 @@ export async function POST(request: Request) {
       );
     }
 
-    // Truncate rawText to 15,000 characters before LLM parsing (SEC-004)
     const textForLLM = rawText.slice(0, MAX_RAW_TEXT_LENGTH);
 
-    // Parse structured profile using LLM with regex fallback
+    // Parse structured profile using LLM
     let parsedProfile;
     try {
-      parsedProfile = await parseResumeWithLLM(textForLLM);
+      parsedProfile = await parseResumeWithLLM(textForLLM, auth.userId);
     } catch (llmErr) {
       console.warn("LLM parsing fallback, applying heuristic extraction:", llmErr);
       const emailMatch = rawText.match(/[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/);
       const phoneMatch = rawText.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
       const linkedinMatch = rawText.match(/linkedin\.com\/in\/[\w-]+/i);
       const githubMatch = rawText.match(/github\.com\/[\w-]+/i);
-      const firstLine = rawText.split('\n').map(l => l.trim()).find(l => l.length > 2 && l.length < 50) || "";
+      const firstLine =
+        rawText
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.length > 2 && l.length < 50) || "";
 
       parsedProfile = {
         fullName: firstLine,
-        email: emailMatch ? emailMatch[0] : "",
+        email: emailMatch ? emailMatch[0] : auth.email,
         phone: phoneMatch ? phoneMatch[0] : "",
         location: "",
         githubUrl: githubMatch ? `https://${githubMatch[0]}` : "",
@@ -94,30 +90,33 @@ export async function POST(request: Request) {
     const expJson = JSON.stringify(parsedProfile.experience || []);
     const eduJson = JSON.stringify(parsedProfile.education || []);
 
-    // Atomic Upsert: guarantees profile exists even on fresh DB (BE-001)
+    // Atomic Upsert into user's profile row
     await db.execute({
-      sql: `INSERT INTO profile (
-              id, full_name, email, phone, location, github_url, linkedin_url, portfolio_url,
-              summary, skills_json, experience_json, education_json, raw_resume_text, resume_file_path, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET
-              full_name = CASE WHEN excluded.full_name != '' THEN excluded.full_name ELSE profile.full_name END,
-              email = CASE WHEN excluded.email != '' THEN excluded.email ELSE profile.email END,
-              phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE profile.phone END,
-              location = CASE WHEN excluded.location != '' THEN excluded.location ELSE profile.location END,
-              github_url = CASE WHEN excluded.github_url != '' THEN excluded.github_url ELSE profile.github_url END,
-              linkedin_url = CASE WHEN excluded.linkedin_url != '' THEN excluded.linkedin_url ELSE profile.linkedin_url END,
-              portfolio_url = CASE WHEN excluded.portfolio_url != '' THEN excluded.portfolio_url ELSE profile.portfolio_url END,
-              summary = CASE WHEN excluded.summary != '' THEN excluded.summary ELSE profile.summary END,
-              skills_json = CASE WHEN excluded.skills_json != '[]' THEN excluded.skills_json ELSE profile.skills_json END,
-              experience_json = CASE WHEN excluded.experience_json != '[]' THEN excluded.experience_json ELSE profile.experience_json END,
-              education_json = CASE WHEN excluded.education_json != '[]' THEN excluded.education_json ELSE profile.education_json END,
+      sql: `INSERT INTO profiles (
+              user_id, full_name, email, phone, location, github_url, linkedin_url, portfolio_url,
+              summary, skills_json, experience_json, education_json, raw_resume_text,
+              resume_pdf_base64, resume_filename, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+              full_name = CASE WHEN excluded.full_name != '' THEN excluded.full_name ELSE profiles.full_name END,
+              email = CASE WHEN excluded.email != '' THEN excluded.email ELSE profiles.email END,
+              phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE profiles.phone END,
+              location = CASE WHEN excluded.location != '' THEN excluded.location ELSE profiles.location END,
+              github_url = CASE WHEN excluded.github_url != '' THEN excluded.github_url ELSE profiles.github_url END,
+              linkedin_url = CASE WHEN excluded.linkedin_url != '' THEN excluded.linkedin_url ELSE profiles.linkedin_url END,
+              portfolio_url = CASE WHEN excluded.portfolio_url != '' THEN excluded.portfolio_url ELSE profiles.portfolio_url END,
+              summary = CASE WHEN excluded.summary != '' THEN excluded.summary ELSE profiles.summary END,
+              skills_json = CASE WHEN excluded.skills_json != '[]' THEN excluded.skills_json ELSE profiles.skills_json END,
+              experience_json = CASE WHEN excluded.experience_json != '[]' THEN excluded.experience_json ELSE profiles.experience_json END,
+              education_json = CASE WHEN excluded.education_json != '[]' THEN excluded.education_json ELSE profiles.education_json END,
               raw_resume_text = excluded.raw_resume_text,
-              resume_file_path = excluded.resume_file_path,
+              resume_pdf_base64 = excluded.resume_pdf_base64,
+              resume_filename = excluded.resume_filename,
               updated_at = CURRENT_TIMESTAMP`,
       args: [
+        auth.userId,
         parsedProfile.fullName || "",
-        parsedProfile.email || "",
+        parsedProfile.email || auth.email,
         parsedProfile.phone || "",
         parsedProfile.location || "",
         parsedProfile.githubUrl || "",
@@ -128,37 +127,30 @@ export async function POST(request: Request) {
         expJson,
         eduJson,
         rawText,
-        resumeFilePath,
+        resumePdfBase64,
+        resumeFilename,
       ],
     });
 
-    const res = await db.execute("SELECT * FROM profile WHERE id = 1");
-    const row = res.rows[0];
-
-    const finalProfile = {
-      fullName: (row.full_name as string) || parsedProfile.fullName || "",
-      email: (row.email as string) || parsedProfile.email || "",
-      phone: (row.phone as string) || parsedProfile.phone || "",
-      location: (row.location as string) || parsedProfile.location || "",
-      githubUrl: (row.github_url as string) || parsedProfile.githubUrl || "",
-      linkedinUrl: (row.linkedin_url as string) || parsedProfile.linkedinUrl || "",
-      portfolioUrl: (row.portfolio_url as string) || parsedProfile.portfolioUrl || "",
-      summary: (row.summary as string) || parsedProfile.summary || "",
-      skills: row.skills_json ? JSON.parse(row.skills_json as string) : parsedProfile.skills || [],
-      experience: row.experience_json ? JSON.parse(row.experience_json as string) : parsedProfile.experience || [],
-      education: row.education_json ? JSON.parse(row.education_json as string) : parsedProfile.education || [],
-      rawText,
-      resumeFilePath,
-    };
-
     return NextResponse.json({
       success: true,
-      profile: finalProfile,
-      message: "Resume parsed and profile updated successfully.",
+      message: "Resume uploaded, encrypted, and parsed successfully.",
+      filename: resumeFilename,
+      profile: {
+        fullName: parsedProfile.fullName,
+        email: parsedProfile.email || auth.email,
+        phone: parsedProfile.phone,
+        skills: parsedProfile.skills || [],
+        experience: parsedProfile.experience || [],
+        education: parsedProfile.education || [],
+        rawText,
+      },
     });
   } catch (err: unknown) {
-    console.error("Resume upload & parsing error:", err);
-    const message = err instanceof Error ? err.message : "Internal Server Error";
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
+    const message = err instanceof Error ? err.message : "Failed to process resume upload.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

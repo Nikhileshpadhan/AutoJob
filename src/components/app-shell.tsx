@@ -7,9 +7,10 @@ import { Header } from "@/components/header";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isLandingPage = pathname === "/";
+  const isPublicPage =
+    pathname === "/" || pathname === "/login" || pathname === "/register";
 
-  if (isLandingPage) {
+  if (isPublicPage) {
     return (
       <div className="min-h-screen w-full bg-[#141516] text-white overflow-x-hidden selection:bg-[#CCF2DF]/20 selection:text-white">
         {children}

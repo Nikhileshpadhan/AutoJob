@@ -37,12 +37,22 @@ export function Header() {
       {/* Live Worker Status Indicator (Aronya aesthetic) */}
       <div className="flex items-center gap-3 pl-10 lg:pl-0">
         {isRunning ? (
-          stats?.isResting ? (
+          stats?.status === "resting" || stats?.isResting ? (
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-[#262728] border-2 border-amber-500/40 text-amber-300 text-xs font-mono uppercase tracking-wider">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
               <span>
                 Resting ({stats.nextRunAt ? `Next apply at ${new Date(stats.nextRunAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Scheduled"})
               </span>
+            </div>
+          ) : stats?.status === "quota_reached_sleeping" ? (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-[#262728] border-2 border-amber-500/40 text-amber-300 text-xs font-mono uppercase tracking-wider">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span>Quota Complete — Resumes 9 AM</span>
+            </div>
+          ) : stats?.status === "waiting_for_window" ? (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-[#262728] border-2 border-amber-500/40 text-amber-300 text-xs font-mono uppercase tracking-wider">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span>Waiting for 9 AM Window</span>
             </div>
           ) : (
             <div className="flex items-center gap-2.5 px-3.5 py-1.5 rounded-[8px] bg-[#131415] border-2 border-[#CCF2DF] text-[#CCF2DF] text-xs font-mono uppercase tracking-wider">

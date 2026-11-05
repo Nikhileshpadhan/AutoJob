@@ -9,9 +9,16 @@ interface TelegramConfig {
   enabled?: boolean;
 }
 
-export async function getTelegramConfig(): Promise<TelegramConfig> {
+/**
+ * Resolves Telegram credentials strictly from user_settings for the specified user.
+ * Never falls back to global .env keys.
+ */
+export async function getTelegramConfig(userId: string = "default-user"): Promise<TelegramConfig> {
   const db = getDb();
-  const settingsRows = await db.execute("SELECT key, value FROM system_settings WHERE key LIKE 'telegram_%'");
+  const settingsRows = await db.execute({
+    sql: "SELECT key, value FROM user_settings WHERE user_id = ? AND key LIKE 'telegram_%'",
+    args: [userId],
+  });
   const settings: Record<string, string> = {};
   for (const row of settingsRows.rows) {
     if (row.key && row.value) {
@@ -19,14 +26,14 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
     }
   }
 
-  const rawBaseUrl = process.env.TELEGRAM_API_BASE_URL || settings.telegram_api_base_url || "https://api.telegram.org";
+  const rawBaseUrl = settings.telegram_api_base_url || "https://api.telegram.org";
   const apiBaseUrl = rawBaseUrl.replace(/\/+$/, "");
-  const rawBotToken = process.env.TELEGRAM_BOT_TOKEN || settings.telegram_bot_token || "";
-  const enabled = (process.env.TELEGRAM_ENABLED || settings.telegram_enabled || "true") === "true";
+  const rawBotToken = settings.telegram_bot_token || "";
+  const enabled = (settings.telegram_enabled || "false") === "true";
 
   return {
     botToken: decryptSecret(rawBotToken),
-    chatId: process.env.TELEGRAM_CHAT_ID || settings.telegram_chat_id || "",
+    chatId: settings.telegram_chat_id || "",
     apiBaseUrl,
     enabled,
   };
@@ -37,15 +44,17 @@ export interface TelegramResult {
   error?: string;
 }
 
-export async function sendTelegramMessageDetails(text: string): Promise<TelegramResult> {
-  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org", enabled } = await getTelegramConfig();
+export async function sendTelegramMessageDetails(
+  text: string,
+  userId: string = "default-user"
+): Promise<TelegramResult> {
+  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org", enabled } = await getTelegramConfig(userId);
   if (!enabled) {
-    return { success: false, error: "Telegram notifications are disabled in settings." };
+    return { success: false, error: "Telegram notifications are disabled in user settings." };
   }
 
   if (!botToken || !chatId) {
-    const errorMsg = "Telegram bot token or chat ID is not configured.";
-    return { success: false, error: errorMsg };
+    return { success: false, error: "Telegram bot token or chat ID is not configured." };
   }
 
   try {
@@ -68,103 +77,143 @@ export async function sendTelegramMessageDetails(text: string): Promise<Telegram
     return { success: true };
   } catch (err: unknown) {
     console.error("Failed to send Telegram message:", err);
-    let errMsg = err instanceof Error ? err.message : String(err);
-    if (errMsg.includes("ECONNRESET") || errMsg.includes("fetch failed")) {
-      errMsg = `Network connection reset (${errMsg}). Your local ISP/network is resetting connections to ${apiBaseUrl}. Use a VPN / Cloudflare WARP or set TELEGRAM_API_BASE_URL to a working reverse proxy in .env.`;
-    }
-    return { success: false, error: errMsg };
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-export async function sendTelegramMessage(text: string): Promise<boolean> {
-  const result = await sendTelegramMessageDetails(text);
-  return result.success;
+export async function sendTelegramMessage(
+  text: string,
+  userId: string = "default-user"
+): Promise<TelegramResult> {
+  return sendTelegramMessageDetails(text, userId);
 }
 
-export async function sendTelegramPhoto(params: {
-  caption: string;
-  photoPathOrBuffer: string | Buffer;
-}): Promise<boolean> {
-  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org", enabled } = await getTelegramConfig();
+export interface TriggerAlertParams {
+  platform: string;
+  type: string;
+  message: string;
+  screenshotPath?: string;
+  screenshotBase64?: string;
+  jobDetails?: { company?: string; position?: string; url?: string };
+  userId?: string;
+}
+
+export async function triggerHumanInTheLoopAlert(
+  params: TriggerAlertParams
+): Promise<{ alertId: number }> {
+  const db = getDb();
+  const userId = params.userId || "default-user";
+
+  let screenshotBase64 = params.screenshotBase64 || null;
+  if (!screenshotBase64 && params.screenshotPath && fs.existsSync(params.screenshotPath)) {
+    try {
+      const fileBuffer = fs.readFileSync(params.screenshotPath);
+      screenshotBase64 = fileBuffer.toString("base64");
+    } catch (e) {
+      console.warn("Failed to read screenshot for alert:", e);
+    }
+  }
+
+  const result = await db.execute({
+    sql: `INSERT INTO alerts (user_id, platform, type, message, screenshot_base64, status)
+          VALUES (?, ?, ?, ?, ?, 'pending')`,
+    args: [userId, params.platform, params.type, params.message, screenshotBase64],
+  });
+
+  const alertId = Number(result.lastInsertRowid);
+  const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const checkpointUrl = `${baseUrl.replace(/\/+$/, "")}/alerts?id=${alertId}`;
+
+  try {
+    await sendTelegramCheckpointAlert(
+      {
+        platform: params.platform,
+        type: params.type,
+        message: params.message,
+        checkpointUrl,
+        screenshotPath: params.screenshotPath,
+        screenshotBase64: screenshotBase64 || undefined,
+      },
+      userId
+    );
+  } catch (err) {
+    console.error("Failed to dispatch Telegram checkpoint notification:", err);
+  }
+
+  return { alertId };
+}
+
+export async function sendTelegramCheckpointAlert(
+  alertData: {
+    platform: string;
+    type: string;
+    message: string;
+    checkpointUrl: string;
+    screenshotPath?: string;
+    screenshotBase64?: string;
+  },
+  userId: string = "default-user"
+): Promise<boolean> {
+  const { botToken, chatId, apiBaseUrl = "https://api.telegram.org", enabled } = await getTelegramConfig(userId);
   if (!enabled || !botToken || !chatId) {
     return false;
   }
 
+  const caption = `🚨 *AutoJob Security Checkpoint Triggered!*
+
+*Platform:* ${alertData.platform.toUpperCase()}
+*Type:* ${alertData.type.toUpperCase()}
+*Details:* ${alertData.message}
+
+⚠️ *Action Required:* Automation is paused awaiting verification.
+[👉 Resolve Checkpoint in AutoJob](${alertData.checkpointUrl})`;
+
   try {
-    const url = `${apiBaseUrl}/bot${botToken}/sendPhoto`;
-    const formData = new FormData();
-    formData.append("chat_id", chatId);
-    formData.append("caption", params.caption);
-    formData.append("parse_mode", "Markdown");
+    if (alertData.screenshotPath && fs.existsSync(alertData.screenshotPath)) {
+      const fileBuffer = fs.readFileSync(alertData.screenshotPath);
+      const formData = new FormData();
+      formData.append("chat_id", chatId);
+      formData.append("caption", caption);
+      formData.append("parse_mode", "Markdown");
+      formData.append(
+        "photo",
+        new Blob([fileBuffer], { type: "image/png" }),
+        "checkpoint.png"
+      );
 
-    let blob: Blob;
-    if (typeof params.photoPathOrBuffer === "string") {
-      const fileBuffer = fs.readFileSync(params.photoPathOrBuffer);
-      blob = new Blob([new Uint8Array(fileBuffer)], { type: "image/png" });
+      const url = `${apiBaseUrl}/bot${botToken}/sendPhoto`;
+      const res = await fetch(url, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      return !!data.ok;
+    } else if (alertData.screenshotBase64) {
+      const cleanBase64 = alertData.screenshotBase64.replace(/^data:image\/\w+;base64,/, "");
+      const fileBuffer = Buffer.from(cleanBase64, "base64");
+      const formData = new FormData();
+      formData.append("chat_id", chatId);
+      formData.append("caption", caption);
+      formData.append("parse_mode", "Markdown");
+      formData.append(
+        "photo",
+        new Blob([fileBuffer], { type: "image/png" }),
+        "checkpoint.png"
+      );
+
+      const url = `${apiBaseUrl}/bot${botToken}/sendPhoto`;
+      const res = await fetch(url, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      return !!data.ok;
     } else {
-      blob = new Blob([new Uint8Array(params.photoPathOrBuffer)], { type: "image/png" });
+      const res = await sendTelegramMessageDetails(caption, userId);
+      return res.success;
     }
-
-    formData.append("photo", blob, "checkpoint.png");
-
-    const response = await fetch(url, {
-      method: "POST",
-      body: formData,
-    });
-
-    const data = await response.json();
-    return !!data.ok;
   } catch (err) {
-    console.error("Failed to send Telegram photo:", err);
+    console.error("Failed to send Telegram checkpoint alert:", err);
     return false;
   }
-}
-
-export async function triggerHumanInTheLoopAlert(params: {
-  platform: "linkedin" | "internshala";
-  type: "captcha" | "otp" | "login_checkpoint" | "error";
-  message: string;
-  screenshotPath?: string;
-  jobDetails?: { company: string; position: string; url?: string };
-}): Promise<{ alertId: number }> {
-  const db = getDb();
-
-  // Log in SQLite alerts table
-  const result = await db.execute({
-    sql: `INSERT INTO alerts (platform, type, message, screenshot_path, status)
-          VALUES (?, ?, ?, ?, 'pending')`,
-    args: [params.platform, params.type, params.message, params.screenshotPath || null],
-  });
-
-  const alertId = Number(result.lastInsertRowid);
-
-  // Format rich Telegram message
-  const icon =
-    params.type === "captcha"
-      ? "🛡️ [CAPTCHA DETECTED]"
-      : params.type === "otp"
-      ? "🔐 [OTP REQUIRED]"
-      : params.type === "login_checkpoint"
-      ? "🔑 [LOGIN REQUIRED]"
-      : "⚠️ [INTERVENTION NEEDED]";
-
-  const text = `${icon}
-*Action Required on ${params.platform.toUpperCase()}*
-
-${params.message}
-
-${params.jobDetails ? `🏢 *Company:* ${params.jobDetails.company}\n💼 *Role:* ${params.jobDetails.position}\n` : ""}
-*Runner status:* Script paused. Please complete the verification in your browser window, then confirm in the AutoJob Dashboard.
-*Alert ID:* #${alertId}`;
-
-  if (params.screenshotPath && fs.existsSync(params.screenshotPath)) {
-    sendTelegramPhoto({
-      caption: text,
-      photoPathOrBuffer: params.screenshotPath,
-    }).catch(() => {});
-  } else {
-    sendTelegramMessage(text).catch(() => {});
-  }
-
-  return { alertId };
 }

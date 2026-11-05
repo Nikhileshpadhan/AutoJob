@@ -1,89 +1,103 @@
 import { NextResponse } from "next/server";
-import { getDb, initDatabase } from "@/lib/db";
+import { getDb, ensureDbInitialized } from "@/lib/db";
+import { requireAuth, AuthError } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
+    const resolvedParams = await params;
+    const appId = parseInt(resolvedParams.id, 10);
+    const db = getDb();
+
+    const res = await db.execute({
+      sql: "SELECT * FROM applications WHERE id = ? AND user_id = ?",
+      args: [appId, auth.userId],
+    });
+
+    if (res.rows.length === 0) {
+      return NextResponse.json({ error: "Application not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ application: res.rows[0] });
+  } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
+    const message = err instanceof Error ? err.message : "Internal Server Error";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
 
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await initDatabase();
-    const { id } = await params;
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
+    const resolvedParams = await params;
+    const appId = parseInt(resolvedParams.id, 10);
     const body = await request.json();
     const db = getDb();
 
-    const allowedStatuses = [
-      "applied",
-      "awaiting_approval",
-      "external_ready",
-      "interviewing",
-      "offered",
-      "rejected",
-      "skipped",
-      "failed",
-      "captcha_blocked",
-    ];
-
+    const allowedFields = ["status", "notes", "match_score", "tailored_letter"];
     const updates: string[] = [];
-    const args: (string | number | null)[] = [];
+    const args: (string | number)[] = [];
 
-    if (body.status !== undefined) {
-      if (!allowedStatuses.includes(body.status)) {
-        return NextResponse.json({ error: `Invalid status: ${body.status}` }, { status: 400 });
+    for (const [key, val] of Object.entries(body)) {
+      if (allowedFields.includes(key)) {
+        updates.push(`${key} = ?`);
+        args.push(val as string | number);
       }
-      updates.push("status = ?");
-      args.push(body.status);
-    }
-
-    if (body.notes !== undefined) {
-      updates.push("notes = ?");
-      args.push(body.notes);
-    }
-
-    if (body.tailored_letter !== undefined) {
-      updates.push("tailored_letter = ?");
-      args.push(body.tailored_letter);
     }
 
     if (updates.length === 0) {
-      return NextResponse.json({ error: "No update fields provided" }, { status: 400 });
+      return NextResponse.json({ error: "No valid fields provided for update" }, { status: 400 });
     }
 
-    args.push(id);
+    args.push(appId, auth.userId);
     await db.execute({
-      sql: `UPDATE applications SET ${updates.join(", ")} WHERE id = ?`,
+      sql: `UPDATE applications SET ${updates.join(", ")} WHERE id = ? AND user_id = ?`,
       args,
     });
 
-    const updated = await db.execute({
-      sql: "SELECT * FROM applications WHERE id = ?",
-      args: [id],
-    });
-
-    return NextResponse.json({ success: true, application: updated.rows[0] });
+    return NextResponse.json({ success: true, message: "Application updated successfully" });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await initDatabase();
-    const { id } = await params;
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
+    const resolvedParams = await params;
+    const appId = parseInt(resolvedParams.id, 10);
     const db = getDb();
 
     await db.execute({
-      sql: "DELETE FROM applications WHERE id = ?",
-      args: [id],
+      sql: "DELETE FROM applications WHERE id = ? AND user_id = ?",
+      args: [appId, auth.userId],
     });
 
-    return NextResponse.json({ success: true, message: `Application ${id} deleted.` });
+    return NextResponse.json({ success: true, message: "Application deleted successfully" });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

@@ -1,42 +1,74 @@
 import { NextResponse } from "next/server";
-import { getDb, initDatabase } from "@/lib/db";
+import { getDb, ensureDbInitialized } from "@/lib/db";
+import { requireAuth, AuthError } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    await initDatabase();
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
     const db = getDb();
-    const res = await db.execute("SELECT * FROM profile WHERE id = 1");
+
+    const res = await db.execute({
+      sql: "SELECT * FROM profiles WHERE user_id = ?",
+      args: [auth.userId],
+    });
+
     if (res.rows.length === 0) {
-      return NextResponse.json({ profile: null });
+      return NextResponse.json({
+        profile: {
+          userId: auth.userId,
+          fullName: "",
+          email: auth.email,
+          phone: "",
+          location: "",
+          githubUrl: "",
+          linkedinUrl: "",
+          portfolioUrl: "",
+          summary: "",
+          resumeFilename: "",
+          rawResumeText: "",
+          skills: [],
+          experience: [],
+          education: [],
+          targetRoles: [
+            "Software Engineer",
+            "Full Stack Developer",
+            "Frontend Developer",
+            "Backend Developer",
+          ],
+          updatedAt: new Date().toISOString(),
+        },
+      });
     }
-    const profile = res.rows[0];
+
+    const p = res.rows[0];
     return NextResponse.json({
       profile: {
-        id: profile.id,
-        fullName: profile.full_name || "",
-        email: profile.email || "",
-        phone: profile.phone || "",
-        location: profile.location || "",
-        githubUrl: profile.github_url || "",
-        linkedinUrl: profile.linkedin_url || "",
-        portfolioUrl: profile.portfolio_url || "",
-        summary: profile.summary || "",
-        resumeFilePath: profile.resume_file_path || "",
-        rawResumeText: profile.raw_resume_text || "",
-        skills: profile.skills_json ? JSON.parse(profile.skills_json as string) : [],
-        experience: profile.experience_json ? JSON.parse(profile.experience_json as string) : [],
-        education: profile.education_json ? JSON.parse(profile.education_json as string) : [],
-        projects: profile.projects_json ? JSON.parse(profile.projects_json as string) : [],
-        screeningDefaults: profile.screening_defaults_json
-          ? JSON.parse(profile.screening_defaults_json as string)
-          : {},
-        targetRoles: profile.target_roles_json ? JSON.parse(profile.target_roles_json as string) : [],
-        updatedAt: profile.updated_at || profile.created_at,
+        userId: String(p.user_id),
+        fullName: String(p.full_name || ""),
+        email: String(p.email || auth.email),
+        phone: String(p.phone || ""),
+        location: String(p.location || ""),
+        githubUrl: String(p.github_url || ""),
+        linkedinUrl: String(p.linkedin_url || ""),
+        portfolioUrl: String(p.portfolio_url || ""),
+        summary: String(p.summary || ""),
+        resumeFilename: String(p.resume_filename || ""),
+        rawResumeText: String(p.raw_resume_text || ""),
+        hasResumePdf: Boolean(p.resume_pdf_base64),
+        skills: p.skills_json ? JSON.parse(String(p.skills_json)) : [],
+        experience: p.experience_json ? JSON.parse(String(p.experience_json)) : [],
+        education: p.education_json ? JSON.parse(String(p.education_json)) : [],
+        targetRoles: p.target_roles_json ? JSON.parse(String(p.target_roles_json)) : [],
+        updatedAt: String(p.updated_at || new Date().toISOString()),
       },
     });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -44,9 +76,11 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    await initDatabase();
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
     const body = await request.json();
     const db = getDb();
+    const userId = auth.userId;
 
     const {
       fullName,
@@ -60,18 +94,15 @@ export async function POST(request: Request) {
       skills,
       experience,
       education,
-      projects,
-      screeningDefaults,
       targetRoles,
     } = body;
 
     await db.execute({
-      sql: `INSERT INTO profile (
-              id, full_name, email, phone, location, github_url, linkedin_url, portfolio_url,
-              summary, skills_json, experience_json, education_json, projects_json,
-              screening_defaults_json, target_roles_json, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET
+      sql: `INSERT INTO profiles (
+              user_id, full_name, email, phone, location, github_url, linkedin_url, portfolio_url,
+              summary, skills_json, experience_json, education_json, target_roles_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
               full_name = excluded.full_name,
               email = excluded.email,
               phone = excluded.phone,
@@ -83,13 +114,12 @@ export async function POST(request: Request) {
               skills_json = excluded.skills_json,
               experience_json = excluded.experience_json,
               education_json = excluded.education_json,
-              projects_json = excluded.projects_json,
-              screening_defaults_json = excluded.screening_defaults_json,
               target_roles_json = excluded.target_roles_json,
               updated_at = CURRENT_TIMESTAMP`,
       args: [
+        userId,
         fullName || "",
-        email || "",
+        email || auth.email,
         phone || "",
         location || "",
         githubUrl || "",
@@ -99,14 +129,18 @@ export async function POST(request: Request) {
         JSON.stringify(skills || []),
         JSON.stringify(experience || []),
         JSON.stringify(education || []),
-        JSON.stringify(projects || []),
-        JSON.stringify(screeningDefaults || {}),
         JSON.stringify(targetRoles || []),
       ],
     });
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({
+      success: true,
+      message: "Profile updated successfully.",
+    });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

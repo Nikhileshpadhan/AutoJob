@@ -6,19 +6,29 @@ let dbInstance: Client | null = null;
 let initPromise: Promise<void> | null = null;
 let pragmasConfigured = false;
 
+/**
+ * Returns the singleton LibSQL / SQLite client.
+ * Connects to Turso Cloud when DATABASE_URL is set (and DATABASE_AUTH_TOKEN),
+ * falling back to local file:./data/autojob.db for local dev.
+ */
 export function getDb(): Client {
   if (dbInstance) {
     if (!initPromise && !pragmasConfigured) {
-      initPromise = initDatabase().catch((err) => {
-        console.error("[Database] Automatic initDatabase failed:", err);
+      initPromise = ensureDbInitialized().catch((err) => {
+        console.error("[Database] Auto initialization failed:", err);
       });
     }
     return dbInstance;
   }
 
   const rawUrl = process.env.DATABASE_URL;
+  const authToken = process.env.DATABASE_AUTH_TOKEN;
+
   if (rawUrl && !rawUrl.startsWith("file:")) {
-    dbInstance = createClient({ url: rawUrl });
+    dbInstance = createClient({
+      url: rawUrl,
+      authToken: authToken || undefined,
+    });
   } else {
     const dataDir = path.join(process.cwd(), "data");
     if (!fs.existsSync(dataDir)) {
@@ -30,19 +40,15 @@ export function getDb(): Client {
     });
   }
 
-  // Trigger background initialization and pragmas
   if (!initPromise) {
-    initPromise = initDatabase().catch((err) => {
-      console.error("[Database] Automatic initDatabase failed:", err);
+    initPromise = ensureDbInitialized().catch((err) => {
+      console.error("[Database] Auto initialization failed:", err);
     });
   }
 
   return dbInstance;
 }
 
-/**
- * Ensures WAL mode and connection pragmas are active on SQLite.
- */
 async function configurePragmas(db: Client) {
   if (pragmasConfigured) return;
   try {
@@ -51,18 +57,160 @@ async function configurePragmas(db: Client) {
     await db.execute("PRAGMA foreign_keys = ON;");
     pragmasConfigured = true;
   } catch (err) {
-    console.warn("[Database] Could not configure SQLite pragmas:", err);
+    // Some cloud LibSQL providers ignore certain local SQLite pragmas
+    console.warn("[Database] SQLite pragmas note:", err);
   }
 }
 
-export async function initDatabase(): Promise<void> {
+/**
+ * Initializes the multi-user database schema with all 8 core tables and indexes.
+ * Cached via module-level initPromise so it executes safely and idempotently.
+ */
+export async function ensureDbInitialized(): Promise<void> {
   const db = dbInstance || getDb();
   await configurePragmas(db);
 
-  // 1. Profile table
+  // 1. users table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // 2. profiles table (Scoped by user_id)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      full_name TEXT DEFAULT '',
+      email TEXT DEFAULT '',
+      phone TEXT DEFAULT '',
+      location TEXT DEFAULT '',
+      github_url TEXT DEFAULT '' ,
+      linkedin_url TEXT DEFAULT '',
+      portfolio_url TEXT DEFAULT '',
+      raw_resume_text TEXT DEFAULT '',
+      resume_pdf_base64 TEXT DEFAULT '',
+      resume_filename TEXT DEFAULT '',
+      skills_json TEXT DEFAULT '[]',
+      experience_json TEXT DEFAULT '[]',
+      education_json TEXT DEFAULT '[]',
+      target_roles_json TEXT DEFAULT '[]',
+      summary TEXT DEFAULT '',
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // 3. user_settings table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, key)
+    );
+  `);
+
+  // 4. applications table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+      platform TEXT NOT NULL,
+      external_job_id TEXT,
+      company TEXT NOT NULL,
+      position TEXT NOT NULL,
+      job_url TEXT,
+      status TEXT NOT NULL,
+      match_score INTEGER,
+      tailored_letter TEXT,
+      form_payload_json TEXT,
+      notes TEXT
+    );
+  `);
+
+  // 5. platform_daily_quota table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS platform_daily_quota (
+      user_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      applied_count INTEGER DEFAULT 0,
+      max_cap INTEGER DEFAULT 5,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, date, platform)
+    );
+  `);
+
+  // 6. alerts table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+      platform TEXT NOT NULL,
+      type TEXT NOT NULL,
+      message TEXT NOT NULL,
+      screenshot_base64 TEXT,
+      status TEXT DEFAULT 'pending',
+      resolved_at TEXT
+    );
+  `);
+
+  // 7. runner_states table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS runner_states (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      is_enabled INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'stopped',
+      platform TEXT DEFAULT 'both',
+      opportunity_type TEXT DEFAULT 'internship',
+      dry_run INTEGER DEFAULT 0,
+      next_run_at TEXT,
+      last_run_at TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // 8. runner_logs table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS runner_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+      level TEXT DEFAULT 'info',
+      message TEXT NOT NULL
+    );
+  `);
+
+  // Performance & Integrity Indexes
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_applications_user 
+    ON applications(user_id, id DESC);
+  `);
+  await db.execute(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_user_platform_ext 
+    ON applications(user_id, platform, external_job_id) 
+    WHERE external_job_id IS NOT NULL;
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_alerts_user 
+    ON alerts(user_id, status);
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_runner_logs_user 
+    ON runner_logs(user_id, id DESC);
+  `);
+
+  // Legacy compatibility: check if single-user 'profile' table exists without user_id
   await db.execute(`
     CREATE TABLE IF NOT EXISTS profile (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
+      id INTEGER PRIMARY KEY,
       full_name TEXT,
       email TEXT,
       phone TEXT,
@@ -72,213 +220,21 @@ export async function initDatabase(): Promise<void> {
       portfolio_url TEXT,
       raw_resume_text TEXT,
       resume_file_path TEXT,
-      skills_json TEXT, -- array of strings
-      experience_json TEXT, -- structured list of experiences
-      education_json TEXT, -- structured list of education
-      projects_json TEXT, -- structured list of projects
-      screening_defaults_json TEXT, -- defaults for GPA, graduation year, stipend, etc.
+      skills_json TEXT,
+      experience_json TEXT,
+      education_json TEXT,
+      projects_json TEXT,
+      screening_defaults_json TEXT,
       summary TEXT,
-      target_roles_json TEXT, -- target job titles / keywords
+      target_roles_json TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-
-  // Ensure newer columns exist if migrating existing DB
-  const profileCols = await db.execute("PRAGMA table_info(profile);");
-  const existingColNames = new Set(profileCols.rows.map((r) => String(r.name)));
-  if (!existingColNames.has("resume_file_path")) {
-    await db.execute("ALTER TABLE profile ADD COLUMN resume_file_path TEXT;").catch(() => {});
-  }
-  if (!existingColNames.has("projects_json")) {
-    await db.execute("ALTER TABLE profile ADD COLUMN projects_json TEXT;").catch(() => {});
-  }
-  if (!existingColNames.has("screening_defaults_json")) {
-    await db.execute("ALTER TABLE profile ADD COLUMN screening_defaults_json TEXT;").catch(() => {});
-  }
-
-  // 2. Applications table
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS applications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      external_job_id TEXT,
-      timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-      platform TEXT NOT NULL, -- 'linkedin' | 'internshala'
-      company TEXT NOT NULL,
-      position TEXT NOT NULL,
-      job_url TEXT,
-      status TEXT NOT NULL, -- 'applied' | 'awaiting_approval' | 'external_ready' | 'skipped' | 'failed' | 'captcha_blocked' | 'in_progress' | 'interviewing' | 'offered' | 'rejected'
-      match_score INTEGER,
-      matched_skills_json TEXT,
-      missing_skills_json TEXT,
-      match_reasoning TEXT,
-      tailored_letter TEXT,
-      form_payload_json TEXT,
-      notes TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  // Migrate newer columns on applications
-  const appCols = await db.execute("PRAGMA table_info(applications);");
-  const appColNames = new Set(appCols.rows.map((r) => String(r.name)));
-  if (!appColNames.has("external_job_id")) {
-    await db.execute("ALTER TABLE applications ADD COLUMN external_job_id TEXT;").catch(() => {});
-  }
-  if (!appColNames.has("match_score")) {
-    await db.execute("ALTER TABLE applications ADD COLUMN match_score INTEGER;").catch(() => {});
-  }
-  if (!appColNames.has("matched_skills_json")) {
-    await db.execute("ALTER TABLE applications ADD COLUMN matched_skills_json TEXT;").catch(() => {});
-  }
-  if (!appColNames.has("missing_skills_json")) {
-    await db.execute("ALTER TABLE applications ADD COLUMN missing_skills_json TEXT;").catch(() => {});
-  }
-  if (!appColNames.has("match_reasoning")) {
-    await db.execute("ALTER TABLE applications ADD COLUMN match_reasoning TEXT;").catch(() => {});
-  }
-
-  // Secondary indexes & deduplication
-  await db.execute(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_platform_job_id 
-    ON applications(platform, external_job_id) 
-    WHERE external_job_id IS NOT NULL;
-  `);
-  await db.execute(`
-    CREATE INDEX IF NOT EXISTS idx_applications_status_platform 
-    ON applications(status, platform);
-  `);
-  await db.execute(`
-    CREATE INDEX IF NOT EXISTS idx_applications_company_position 
-    ON applications(company, position);
-  `);
-
-  // 3. Daily quota tables
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS daily_quota (
-      date TEXT PRIMARY KEY,
-      applied_count INTEGER DEFAULT 0,
-      max_cap INTEGER DEFAULT 10,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS platform_daily_quota (
-      date TEXT NOT NULL,
-      platform TEXT NOT NULL, -- 'linkedin' | 'internshala'
-      applied_count INTEGER DEFAULT 0,
-      max_cap INTEGER DEFAULT 5,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (date, platform)
-    );
-  `);
-
-  // 4. Alerts table
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS alerts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-      platform TEXT NOT NULL,
-      type TEXT NOT NULL, -- 'captcha' | 'otp' | 'login_checkpoint' | 'error'
-      message TEXT NOT NULL,
-      screenshot_path TEXT,
-      status TEXT DEFAULT 'pending', -- 'pending' | 'resolved' | 'dismissed'
-      resolved_at TEXT
-    );
-  `);
-
-  await db.execute(`
-    CREATE INDEX IF NOT EXISTS idx_alerts_status 
-    ON alerts(status);
-  `);
-
-  // 5. System settings table
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS system_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  // 6. Automation runs table
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS automation_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      status TEXT NOT NULL, -- 'running' | 'completed' | 'failed' | 'aborted'
-      platform TEXT NOT NULL,
-      opportunity_type TEXT,
-      workplace_type TEXT,
-      target_location TEXT,
-      apply_type TEXT,
-      started_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      ended_at TEXT,
-      pid INTEGER,
-      current_platform TEXT,
-      current_role TEXT,
-      stats_json TEXT,
-      error_message TEXT
-    );
-  `);
-
-  // 7. Automation logs table
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS automation_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      run_id INTEGER,
-      timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-      level TEXT NOT NULL, -- 'info' | 'warn' | 'error' | 'success'
-      stage TEXT,
-      message TEXT NOT NULL,
-      metadata_json TEXT
-    );
-  `);
-
-  await db.execute(`
-    CREATE INDEX IF NOT EXISTS idx_automation_logs_run_id 
-    ON automation_logs(run_id);
-  `);
-
-  // Seed singleton profile row id = 1 if not exists
-  const existingProfile = await db.execute("SELECT id FROM profile WHERE id = 1");
-  if (existingProfile.rows.length === 0) {
-    await db.execute({
-      sql: `INSERT INTO profile (id, full_name, email, skills_json, target_roles_json, screening_defaults_json)
-            VALUES (1, '', '', '[]', '["Full Stack Developer", "Software Engineer", "Frontend Developer", "Backend Developer"]', '{}')
-            ON CONFLICT(id) DO NOTHING`,
-      args: [],
-    });
-  }
-
-  // Seed default settings if not exists
-  const defaultSettings: Record<string, string> = {
-    daily_cap: "10",
-    linkedin_daily_cap: "5",
-    internshala_daily_cap: "5",
-    opportunity_type: "internship",
-    workplace_type: "remote",
-    target_location: "Remote",
-    apply_type: "easy_apply_only", // Default to safe easy_apply_only so direct links do not waste slots
-    min_match_score: "65",
-    active_llm: "gemini",
-    gemini_model: "gemini-2.5-flash",
-    telegram_enabled: "true",
-    auto_apply_enabled: "true",
-    pacing_enabled: "true",
-    active_window_start: "9",
-    active_window_end: "23",
-    min_rest_minutes: "20",
-    max_rest_minutes: "60",
-  };
-
-  for (const [k, v] of Object.entries(defaultSettings)) {
-    await db.execute({
-      sql: `INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)`,
-      args: [k, v],
-    });
-  }
+  `).catch(() => {});
 }
+
+// Alias for compatibility with older scripts & tests
+export const initDatabase = ensureDbInitialized;
 
 export interface PlatformQuota {
   date: string;
@@ -299,54 +255,138 @@ export interface CombinedQuota {
   };
 }
 
+export interface RunnerState {
+  userId: string;
+  isEnabled: boolean;
+  status: "stopped" | "running" | "resting" | "waiting_for_window" | "quota_reached_sleeping";
+  platform: "linkedin" | "internshala" | "both";
+  opportunityType: "internship" | "job";
+  dryRun: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  updatedAt: string;
+}
+
 /**
- * Retrieves the daily quota for a specific platform.
+ * Retrieves user settings as key-value pairs.
  */
-export async function getTodayPlatformQuota(platform: "linkedin" | "internshala"): Promise<PlatformQuota> {
+export async function getUserSettings(userId: string): Promise<Record<string, string>> {
   const db = getDb();
-  await initPromise;
-  const todayStr = new Date().toISOString().split("T")[0];
+  await (initPromise || ensureDbInitialized());
 
-  const capKey = `${platform}_daily_cap`;
-  const capSetting = await db.execute({
-    sql: "SELECT value FROM system_settings WHERE key = ?",
-    args: [capKey],
+  const rows = await db.execute({
+    sql: "SELECT key, value FROM user_settings WHERE user_id = ?",
+    args: [userId],
   });
-  const maxCap = capSetting.rows[0]?.value ? parseInt(capSetting.rows[0].value as string, 10) : 5;
 
-  // Reconcile with verified actual applications applied today from the applications table
+  const settings: Record<string, string> = {
+    daily_cap: "10",
+    linkedin_daily_cap: "5",
+    internshala_daily_cap: "5",
+    opportunity_type: "internship",
+    workplace_type: "remote",
+    target_location: "Remote",
+    apply_type: "easy_apply_only",
+    min_match_score: "65",
+    active_llm: "gemini",
+    gemini_model: "gemini-2.5-flash",
+    telegram_enabled: "false",
+    auto_apply_enabled: "true",
+    pacing_enabled: "true",
+    active_window_start: "9",
+    active_window_end: "23",
+    min_rest_minutes: "20",
+    max_rest_minutes: "60",
+    timezone: "Asia/Kolkata",
+  };
+
+  for (const r of rows.rows) {
+    if (r.key && r.value !== null && r.value !== undefined) {
+      settings[String(r.key)] = String(r.value);
+    }
+  }
+
+  return settings;
+}
+
+/**
+ * Saves multiple settings for a user.
+ */
+export async function setUserSettings(
+  userId: string,
+  settings: Record<string, string>
+): Promise<void> {
+  const db = getDb();
+  await (initPromise || ensureDbInitialized());
+
+  for (const [key, value] of Object.entries(settings)) {
+    await db.execute({
+      sql: `INSERT INTO user_settings (user_id, key, value, updated_at) 
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      args: [userId, key, value],
+    });
+  }
+}
+
+/**
+ * Retrieves daily quota for a user and platform.
+ */
+export async function getTodayPlatformQuota(
+  userIdOrPlatform: string,
+  platformArg?: "linkedin" | "internshala"
+): Promise<PlatformQuota> {
+  const db = getDb();
+  await (initPromise || ensureDbInitialized());
+
+  const isLegacy = !platformArg && (userIdOrPlatform === "linkedin" || userIdOrPlatform === "internshala");
+  const userId = isLegacy ? "default-user" : userIdOrPlatform;
+  const platform = isLegacy ? (userIdOrPlatform as "linkedin" | "internshala") : platformArg!;
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const settings = await getUserSettings(userId);
+  const capKey = `${platform}_daily_cap`;
+  const maxCap = settings[capKey] ? parseInt(settings[capKey], 10) : 5;
+
+  // Reconcile with verified actual applications applied today
   const actualRes = await db.execute({
     sql: `SELECT COUNT(*) as count 
           FROM applications 
-          WHERE platform = ? 
+          WHERE user_id = ? 
+            AND platform = ? 
             AND status = 'applied' 
-            AND (date(created_at) = ? OR date(created_at, 'localtime') = ?)`,
-    args: [platform, todayStr, todayStr],
+            AND (date(timestamp) = ? OR date(timestamp, 'localtime') = ?)`,
+    args: [userId, platform, todayStr, todayStr],
   });
   const actualCount = Number(actualRes.rows[0]?.count || 0);
 
   const res = await db.execute({
-    sql: "SELECT * FROM platform_daily_quota WHERE date = ? AND platform = ?",
-    args: [todayStr, platform],
+    sql: "SELECT * FROM platform_daily_quota WHERE user_id = ? AND date = ? AND platform = ?",
+    args: [userId, todayStr, platform],
   });
 
   if (res.rows.length === 0) {
     await db.execute({
-      sql: `INSERT INTO platform_daily_quota (date, platform, applied_count, max_cap) 
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(date, platform) DO UPDATE SET applied_count = ?`,
-      args: [todayStr, platform, actualCount, maxCap, actualCount],
+      sql: `INSERT INTO platform_daily_quota (user_id, date, platform, applied_count, max_cap) 
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, date, platform) DO UPDATE SET applied_count = excluded.applied_count`,
+      args: [userId, todayStr, platform, actualCount, maxCap],
     });
-    return { date: todayStr, platform, applied_count: actualCount, max_cap: maxCap, remaining: Math.max(0, maxCap - actualCount) };
+    return {
+      date: todayStr,
+      platform,
+      applied_count: actualCount,
+      max_cap: maxCap,
+      remaining: Math.max(0, maxCap - actualCount),
+    };
   }
 
-  // Ensure database row is kept strictly in sync with verified actual applications
   const row = res.rows[0];
   const cap = Number(row.max_cap || maxCap);
   if (Number(row.applied_count) !== actualCount) {
     await db.execute({
-      sql: "UPDATE platform_daily_quota SET applied_count = ? WHERE date = ? AND platform = ?",
-      args: [actualCount, todayStr, platform],
+      sql: "UPDATE platform_daily_quota SET applied_count = ? WHERE user_id = ? AND date = ? AND platform = ?",
+      args: [actualCount, userId, todayStr, platform],
     });
   }
 
@@ -360,57 +400,42 @@ export async function getTodayPlatformQuota(platform: "linkedin" | "internshala"
 }
 
 /**
- * Atomically increments the daily quota for a specific platform.
+ * Atomically increments the daily quota for a specific user and platform.
  */
-export async function incrementTodayPlatformQuota(platform: "linkedin" | "internshala"): Promise<PlatformQuota> {
+export async function incrementTodayPlatformQuota(
+  userIdOrPlatform: string,
+  platformArg?: "linkedin" | "internshala"
+): Promise<PlatformQuota> {
   const db = getDb();
-  await initPromise;
+  await (initPromise || ensureDbInitialized());
+
+  const isLegacy = !platformArg && (userIdOrPlatform === "linkedin" || userIdOrPlatform === "internshala");
+  const userId = isLegacy ? "default-user" : userIdOrPlatform;
+  const platform = isLegacy ? (userIdOrPlatform as "linkedin" | "internshala") : platformArg!;
+
   const todayStr = new Date().toISOString().split("T")[0];
-
+  const settings = await getUserSettings(userId);
   const capKey = `${platform}_daily_cap`;
-  const capSetting = await db.execute({
-    sql: "SELECT value FROM system_settings WHERE key = ?",
-    args: [capKey],
-  });
-  const maxCap = capSetting.rows[0]?.value ? parseInt(capSetting.rows[0].value as string, 10) : 5;
+  const maxCap = settings[capKey] ? parseInt(settings[capKey], 10) : 5;
 
-  // Atomic upsert with direct SQL increment
   await db.execute({
-    sql: `INSERT INTO platform_daily_quota (date, platform, applied_count, max_cap)
-          VALUES (?, ?, 1, ?)
-          ON CONFLICT(date, platform) DO UPDATE SET 
+    sql: `INSERT INTO platform_daily_quota (user_id, date, platform, applied_count, max_cap)
+          VALUES (?, ?, ?, 1, ?)
+          ON CONFLICT(user_id, date, platform) DO UPDATE SET 
             applied_count = platform_daily_quota.applied_count + 1,
             max_cap = excluded.max_cap,
             updated_at = CURRENT_TIMESTAMP`,
-    args: [todayStr, platform, maxCap],
+    args: [userId, todayStr, platform, maxCap],
   });
 
-  // Fetch updated record
   const res = await db.execute({
-    sql: "SELECT * FROM platform_daily_quota WHERE date = ? AND platform = ?",
-    args: [todayStr, platform],
+    sql: "SELECT * FROM platform_daily_quota WHERE user_id = ? AND date = ? AND platform = ?",
+    args: [userId, todayStr, platform],
   });
+
   const row = res.rows[0];
-  const count = Number(row.applied_count || 1);
-  const cap = Number(row.max_cap || maxCap);
-
-  // Sync aggregate daily_quota table
-  const totalRes = await db.execute({
-    sql: "SELECT SUM(applied_count) as total_applied FROM platform_daily_quota WHERE date = ?",
-    args: [todayStr],
-  });
-  const totalApplied = Number(totalRes.rows[0]?.total_applied || count);
-
-  const linkedinQuota = await getTodayPlatformQuota("linkedin");
-  const internshalaQuota = await getTodayPlatformQuota("internshala");
-  const totalCap = linkedinQuota.max_cap + internshalaQuota.max_cap;
-
-  await db.execute({
-    sql: `INSERT INTO daily_quota (date, applied_count, max_cap) 
-          VALUES (?, ?, ?) 
-          ON CONFLICT(date) DO UPDATE SET applied_count = ?, max_cap = ?, updated_at = CURRENT_TIMESTAMP`,
-    args: [todayStr, totalApplied, totalCap, totalApplied, totalCap],
-  });
+  const count = Number(row?.applied_count || 1);
+  const cap = Number(row?.max_cap || maxCap);
 
   return {
     date: todayStr,
@@ -422,14 +447,14 @@ export async function incrementTodayPlatformQuota(platform: "linkedin" | "intern
 }
 
 /**
- * Helper function returning overall quota with platform breakdown.
+ * Returns combined quota for a user.
  */
-export async function getTodayQuota(): Promise<CombinedQuota> {
-  await initPromise;
+export async function getTodayQuota(userId: string = "default-user"): Promise<CombinedQuota> {
+  await (initPromise || ensureDbInitialized());
   const todayStr = new Date().toISOString().split("T")[0];
   const [linkedin, internshala] = await Promise.all([
-    getTodayPlatformQuota("linkedin"),
-    getTodayPlatformQuota("internshala"),
+    getTodayPlatformQuota(userId, "linkedin"),
+    getTodayPlatformQuota(userId, "internshala"),
   ]);
 
   const appliedCount = linkedin.applied_count + internshala.applied_count;
@@ -448,6 +473,127 @@ export async function getTodayQuota(): Promise<CombinedQuota> {
   };
 }
 
-export async function incrementTodayQuota(platform: "linkedin" | "internshala" = "linkedin") {
-  return await incrementTodayPlatformQuota(platform);
+export async function incrementTodayQuota(
+  userId: string = "default-user",
+  platform: "linkedin" | "internshala" = "linkedin"
+) {
+  return await incrementTodayPlatformQuota(userId, platform);
+}
+
+/**
+ * Runner state management for multi-user daemon / cloud worker.
+ */
+export async function getRunnerState(userId: string): Promise<RunnerState> {
+  const db = getDb();
+  await (initPromise || ensureDbInitialized());
+
+  const res = await db.execute({
+    sql: "SELECT * FROM runner_states WHERE user_id = ?",
+    args: [userId],
+  });
+
+  if (res.rows.length === 0) {
+    await db.execute({
+      sql: `INSERT INTO runner_states (user_id, is_enabled, status) VALUES (?, 0, 'stopped')`,
+      args: [userId],
+    });
+    return {
+      userId,
+      isEnabled: false,
+      status: "stopped",
+      platform: "both",
+      opportunityType: "internship",
+      dryRun: false,
+      nextRunAt: null,
+      lastRunAt: null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const r = res.rows[0];
+  return {
+    userId: String(r.user_id),
+    isEnabled: Number(r.is_enabled) === 1,
+    status: (r.status as RunnerState["status"]) || "stopped",
+    platform: (r.platform as RunnerState["platform"]) || "both",
+    opportunityType: (r.opportunity_type as RunnerState["opportunityType"]) || "internship",
+    dryRun: Number(r.dry_run) === 1,
+    nextRunAt: r.next_run_at ? String(r.next_run_at) : null,
+    lastRunAt: r.last_run_at ? String(r.last_run_at) : null,
+    updatedAt: String(r.updated_at || new Date().toISOString()),
+  };
+}
+
+export async function updateRunnerState(
+  userId: string,
+  state: Partial<Omit<RunnerState, "userId">>
+): Promise<void> {
+  const db = getDb();
+  await (initPromise || ensureDbInitialized());
+
+  const current = await getRunnerState(userId);
+  const isEnabled = state.isEnabled !== undefined ? (state.isEnabled ? 1 : 0) : current.isEnabled ? 1 : 0;
+  const status = state.status !== undefined ? state.status : current.status;
+  const platform = state.platform !== undefined ? state.platform : current.platform;
+  const opportunityType = state.opportunityType !== undefined ? state.opportunityType : current.opportunityType;
+  const dryRun = state.dryRun !== undefined ? (state.dryRun ? 1 : 0) : current.dryRun ? 1 : 0;
+  const nextRunAt = state.nextRunAt !== undefined ? state.nextRunAt : current.nextRunAt;
+  const lastRunAt = state.lastRunAt !== undefined ? state.lastRunAt : current.lastRunAt;
+
+  await db.execute({
+    sql: `INSERT INTO runner_states (user_id, is_enabled, status, platform, opportunity_type, dry_run, next_run_at, last_run_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(user_id) DO UPDATE SET
+            is_enabled = excluded.is_enabled,
+            status = excluded.status,
+            platform = excluded.platform,
+            opportunity_type = excluded.opportunity_type,
+            dry_run = excluded.dry_run,
+            next_run_at = excluded.next_run_at,
+            last_run_at = excluded.last_run_at,
+            updated_at = CURRENT_TIMESTAMP`,
+    args: [userId, isEnabled, status, platform, opportunityType, dryRun, nextRunAt, lastRunAt],
+  });
+}
+
+/**
+ * Appends a log entry into runner_logs.
+ */
+export async function addRunnerLog(
+  userId: string,
+  message: string,
+  level: "info" | "warn" | "error" | "success" = "info"
+): Promise<void> {
+  try {
+    const db = getDb();
+    await db.execute({
+      sql: "INSERT INTO runner_logs (user_id, level, message) VALUES (?, ?, ?)",
+      args: [userId, level, message],
+    });
+  } catch (err) {
+    console.error("[Database] Failed to write runner log:", err);
+  }
+}
+
+/**
+ * Fetches recent runner logs for a user.
+ */
+export async function getRunnerLogs(
+  userId: string,
+  limit: number = 200
+): Promise<Array<{ id: number; timestamp: string; level: string; message: string }>> {
+  const db = getDb();
+  await (initPromise || ensureDbInitialized());
+
+  const res = await db.execute({
+    sql: "SELECT id, timestamp, level, message FROM runner_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+    args: [userId, limit],
+  });
+
+  return res.rows.map((r) => ({
+    id: Number(r.id),
+    timestamp: String(r.timestamp),
+    level: String(r.level),
+    message: String(r.message),
+  })).reverse();
 }

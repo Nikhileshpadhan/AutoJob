@@ -12,14 +12,40 @@ import {
   AlertTriangle,
   X,
   Menu,
+  LogOut,
+  User as UserIcon,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useTelemetry } from "./telemetry-provider";
 
 export function Sidebar() {
+  const router = useRouter();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const { stats } = useTelemetry();
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.user) {
+          setCurrentUser({ name: data.user.name, email: data.user.email });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      router.push("/login");
+      router.refresh();
+    } catch {
+      window.location.href = "/login";
+    }
+  }
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -225,6 +251,31 @@ export function Sidebar() {
               {pendingAlerts}
             </span>
           </div>
+        </div>
+
+        {/* User Account & Logout */}
+        <div className="pt-3 border-t border-[#303132] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-[8px] bg-[#262728] border border-[#303132] flex items-center justify-center text-[#CCF2DF] text-xs font-mono font-bold shrink-0">
+              {currentUser?.name ? currentUser.name.charAt(0).toUpperCase() : <UserIcon className="w-4 h-4 text-[#B8B9B9]" />}
+            </div>
+            <div className="min-w-0 leading-tight">
+              <span className="text-xs font-medium text-white truncate block">
+                {currentUser?.name || "AutoJob User"}
+              </span>
+              <span className="text-[10px] font-mono text-[#B8B9B9] truncate block">
+                {currentUser?.email || "Signed in"}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={handleLogout}
+            title="Sign out"
+            aria-label="Sign out"
+            className="p-2 rounded-[8px] border border-[#303132] text-[#B8B9B9] hover:text-white hover:border-white transition-colors cursor-pointer shrink-0"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
     </>

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getDb, initDatabase, incrementTodayPlatformQuota } from "@/lib/db";
+import { getDb, ensureDbInitialized, incrementTodayPlatformQuota } from "@/lib/db";
+import { requireAuth, AuthError } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,9 @@ function sanitizeUrl(rawUrl: string | null | undefined): string | null {
 
 export async function GET(request: Request) {
   try {
-    await initDatabase();
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
+
     const { searchParams } = new URL(request.url);
     const platform = searchParams.get("platform");
     const status = searchParams.get("status");
@@ -28,8 +31,8 @@ export async function GET(request: Request) {
     const offset = Math.max(parseInt(searchParams.get("offset") || "0", 10), 0);
 
     const db = getDb();
-    let query = "SELECT * FROM applications WHERE 1=1";
-    const args: (string | number)[] = [];
+    let query = "SELECT * FROM applications WHERE user_id = ?";
+    const args: (string | number)[] = [auth.userId];
 
     if (platform && platform !== "all") {
       query += " AND platform = ?";
@@ -46,7 +49,6 @@ export async function GET(request: Request) {
       args.push(`%${search}%`, `%${search}%`);
     }
 
-    // Count total matching
     const countSql = query.replace("SELECT *", "SELECT COUNT(*) as total");
     const countRes = await db.execute({ sql: countSql, args: [...args] });
     const totalCount = Number(countRes.rows[0]?.total || 0);
@@ -66,6 +68,9 @@ export async function GET(request: Request) {
       },
     });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -73,63 +78,68 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    await initDatabase();
+    const auth = await requireAuth(request);
+    await ensureDbInitialized();
     const body = await request.json();
     const {
       platform,
       company,
       position,
-      job_url,
-      external_job_id,
-      status,
-      match_score,
-      matched_skills,
-      missing_skills,
-      match_reasoning,
-      tailored_letter,
-      form_payload,
+      jobUrl,
+      status = "applied",
+      matchScore,
+      tailoredLetter,
+      formPayload,
       notes,
+      externalJobId,
     } = body;
 
-    if (!platform || !company || !position || !status) {
-      return NextResponse.json({ error: "Missing required fields: platform, company, position, status" }, { status: 400 });
+    if (!platform || !company || !position) {
+      return NextResponse.json(
+        { error: "platform, company, and position are mandatory fields." },
+        { status: 400 }
+      );
     }
 
-    const validPlatform = platform === "internshala" ? "internshala" : "linkedin";
-    const safeJobUrl = sanitizeUrl(job_url);
-
     const db = getDb();
-    const result = await db.execute({
+    const safeJobUrl = sanitizeUrl(jobUrl);
+
+    const res = await db.execute({
       sql: `INSERT INTO applications (
-              platform, company, position, job_url, external_job_id, status,
-              match_score, matched_skills_json, missing_skills_json, match_reasoning,
-              tailored_letter, form_payload_json, notes
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              user_id, platform, company, position, job_url, status, match_score,
+              tailored_letter, form_payload_json, notes, external_job_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
-        validPlatform,
+        auth.userId,
+        platform,
         company,
         position,
         safeJobUrl,
-        external_job_id || null,
         status,
-        typeof match_score === "number" ? match_score : null,
-        matched_skills ? JSON.stringify(matched_skills) : null,
-        missing_skills ? JSON.stringify(missing_skills) : null,
-        match_reasoning || null,
-        tailored_letter || null,
-        form_payload ? JSON.stringify(form_payload) : null,
+        matchScore || null,
+        tailoredLetter || null,
+        formPayload ? JSON.stringify(formPayload) : null,
         notes || null,
+        externalJobId || null,
       ],
     });
 
-    // Only increment daily quota if application is confirmed 'applied' (BE-003, AUTO-003)
     if (status === "applied") {
-      await incrementTodayPlatformQuota(validPlatform);
+      await incrementTodayPlatformQuota(
+        auth.userId,
+        platform.toLowerCase() === "internshala" ? "internshala" : "linkedin"
+      );
     }
 
-    return NextResponse.json({ success: true, id: result.lastInsertRowid });
+    return NextResponse.json({
+      success: true,
+      id: Number(res.lastInsertRowid),
+      message: "Application recorded successfully.",
+    });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Internal Server Error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

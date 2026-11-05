@@ -20,6 +20,12 @@ export interface ParsedProfile {
     institution: string;
     year?: string;
   }>;
+  projects?: Array<{
+    name: string;
+    description?: string;
+    technologies?: string[];
+  }>;
+  targetRoles?: string[];
   summary?: string;
   rawText: string;
 }
